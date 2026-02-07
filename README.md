@@ -99,6 +99,25 @@ For installation on Windows using Git bash, please refer to the [instructions sh
 
 We also provide a docker image. We recommend using a venv to run the code inside a docker image:
 
+**Recommended: GPU-Ready Docker with Vendored Dependencies (CUDA 12.1, Torch 2.3)**
+
+This repository includes a reproducible Docker setup with:
+- Pre-built CUDA 12.1 environment
+- PyTorch with CUDA 12.1 wheels
+- Vendored `diff-gaussian-rasterization` at a known-good commit (no external dependencies)
+- Automatic GPU detection and fallback support (nvidia-docker, legacy runtimes, device mapping)
+
+Build and run:
+```bash
+docker build -t splatam-clean:cu121 -f docker/Dockerfile .
+./docker/run.sh
+```
+
+The script will auto-detect your GPU setup and handle runtimes accordingly. For troubleshooting, see [docker/README.md](docker/README.md) and run `bash scripts/check_gpu.sh` inside the container.
+
+**Legacy Docker**
+
+Alternatively, use the published image:
 
 ```bash
 docker pull nkeetha/splatam:v1
@@ -111,6 +130,8 @@ virtualenv --system-site-packages splatam
 source ./splatam/bin/activate
 pip install -r venv_requirements.txt
 ```
+
+**Singularity**
 
 Setting up a singularity container is similar:
 ```bash
