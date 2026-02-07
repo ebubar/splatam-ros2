@@ -64,6 +64,12 @@
   </ol>
 </details>
 
+## New Docker Install
+docker build --no-cache -t splatam-clean:cu121 -f docker/Dockerfile .
+
+./docker/run.sh
+
+
 ## Installation
 
 ##### (Recommended)
@@ -349,6 +355,9 @@ python scripts/eval_novel_view.py configs/replica_v2/eval_novel_view.py
 ```
 
 For other scenes, please modify the config files.
+
+
+
 
 ## Acknowledgement
 

@@ -1,3 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+env/
+venv/
+.venv/
+build/
+dist/
+*.egg-info/
+
+# Pytest / tooling
+.pytest_cache/
+.mypy_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDEs
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+
+# Large data and runtime artifacts
+/data/
+/experiments/
+/wandb/
+
+# Virtualenvs
+venv_requirements.txt
 # Sub-Directories
 configs/local
 data/
