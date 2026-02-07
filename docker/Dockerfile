@@ -10,6 +10,26 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 libgomp1 \
   && rm -rf /var/lib/apt/lists/*
 
+# Install ROS2 Humble
+RUN apt-get update && \
+    apt-get install -y software-properties-common && \
+    add-apt-repository universe && \
+    apt-get update && \
+    curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" | tee /etc/apt/sources.list.d/ros2.list > /dev/null && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+      ros-humble-ros-core \
+      ros-humble-geometry-msgs \
+      ros-humble-sensor-msgs \
+      ros-humble-std-msgs \
+      ros-humble-image-transport \
+      python3-colcon-common-extensions \
+    && rm -rf /var/lib/apt/lists/*
+
+# Source ROS2 setup in bashrc for interactive shells
+RUN echo "source /opt/ros/humble/setup.bash" >> /etc/bash.bashrc
+
 RUN update-alternatives --install /usr/bin/python  python  /usr/bin/python3.10 10 && \
     update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 10
 
