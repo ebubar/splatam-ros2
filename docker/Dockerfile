@@ -29,6 +29,9 @@ RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel
 
 WORKDIR /SplaTAM
 
+# Copy repository into the image so vendored packages (third_party/) are available
+COPY . /SplaTAM
+
 RUN python -m pip install --no-cache-dir \
     torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 
