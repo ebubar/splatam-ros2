@@ -1,0 +1,214 @@
+# Zenoh 2-Machine Protocol (Docker router)
+
+## Roles
+
+* **Laptop 1 (IP = 10.131.7.190)**: runs **ZED2i publisher** + runs **zenoh router**
+* **Laptop 2 (IP = 10.131.7.185)**: runs **subscriber** + runs **zenoh_bridge_dds** client
+
+Port used: **7447/tcp**
+
+---
+
+## 0) Preflight (do once)
+
+### On BOTH laptops
+
+1. Confirm they can reach each other:
+
+```bash
+ping -c 3 10.131.7.190
+ping -c 3 10.131.7.185
+```
+
+2. Use the same ROS domain (pick any number, example 42):
+
+```bash
+export ROS_DOMAIN_ID=xx
+```
+
+(Optional) put it in your shell config later:
+
+```bash
+echo 'export ROS_DOMAIN_ID=xx' >> ~/.bashrc
+```
+
+### On Laptop 1: allow port 7447
+
+If you use UFW:
+
+```bash
+sudo ufw allow 7447/tcp
+```
+
+---
+
+## 1) Laptop 1: Start zenoh router (Docker)
+
+Run this **first** and leave it running:
+
+```bash
+docker run --rm --name zenoh-router --net=host eclipse/zenoh \
+  --cfg='listen/endpoints:["tcp/0.0.0.0:7447"]' \
+  --cfg='scouting/multicast/enabled:false'
+```
+
+### Verify router is listening (Laptop 1)
+
+Open a new terminal:
+
+```bash
+ss -ltnp | grep 7447
+```
+
+You should see something bound to `:7447`.
+
+---
+
+## 2) Laptop 1: Start ZED ROS2 publisher
+
+In another terminal on Laptop 1 (your normal ZED launch):
+
+```bash
+export ROS_DOMAIN_ID=xx
+# start your ZED node / launch file here
+```
+
+Quick check locally on Laptop 1:
+
+```bash
+ros2 topic list | grep zed
+```
+
+---
+
+## 3) Laptop 1: Start zenoh DDS bridge (server-side)
+
+In another terminal on Laptop 1:
+
+```bash
+source /opt/ros/*/setup.bash
+export ROS_DOMAIN_ID=xx
+
+ros2 run zenoh_bridge_dds zenoh_bridge_dds -e tcp/127.0.0.1:7447
+```
+
+Leave it running.
+
+---
+
+## 4) Laptop 2: Start zenoh DDS bridge (client-side)
+
+On Laptop 2:
+
+```bash
+source /opt/ros/*/setup.bash
+export ROS_DOMAIN_ID=xx
+
+ros2 run zenoh_bridge_dds zenoh_bridge_dds -e tcp/10.131.7.190:7447
+```
+
+That log you saw:
+
+```
+using network interface wlp0s20f3 ... selected arbitrarily
+```
+
+is **normal**.
+
+### Verify Laptop 2 can reach router port
+
+```bash
+nc -vz 10.131.7.190 7447
+```
+
+Should say “succeeded”.
+
+---
+
+## 5) Laptop 2: Validate ROS topics and frame rate
+
+In a **new terminal** on Laptop 2 (keep the bridge running in its own terminal):
+
+```bash
+export ROS_DOMAIN_ID=xx
+ros2 topic list | grep zed
+```
+
+Then test rate:
+
+```bash
+ros2 topic hz /zed/zed_node/rgb/color/rect/image/compressed
+ros2 topic bw /zed/zed_node/rgb/color/rect/image/compressed
+```
+
+---
+
+# Shutdown order (to avoid weirdness)
+
+1. Stop subscriber (Laptop 2)
+2. Stop zenoh bridge (Laptop 2)
+3. Stop zenoh bridge (Laptop 1)
+4. Stop ZED node (Laptop 1)
+5. Stop zenoh-router container (Laptop 1)
+
+---
+
+# Common issues + fixes
+
+## Issue A: “selected arbitrarily from: wlp…, docker0, br-…”
+
+This is zenoh picking a NIC. Usually fine, but if it picks a Docker bridge sometimes, it can get flaky.
+
+**Fix (easy):** temporarily bring down Docker bridges on Laptop 2 (only if safe), or run on Ethernet.
+
+**Fix (best):** pin the interface via a config file.
+If you paste `ros2 run zenoh_bridge_dds zenoh_bridge_dds --help`, I’ll give you the exact config format for *your* version (the flags differ by release).
+
+---
+
+## Issue B: Router is up but Laptop 2 shows no `/zed/...` topics
+
+Most common causes:
+
+* `ROS_DOMAIN_ID` not matching
+* zenoh bridge not running on Laptop 1
+* firewall blocks 7447
+
+Checks:
+
+```bash
+# Laptop 1
+ss -ltnp | grep 7447
+ros2 node list | head
+
+# Laptop 2
+nc -vz 10.131.7.190 7447
+```
+
+---
+
+## Issue C: Still dropping frames even with zenoh
+
+Then it’s likely **bandwidth/CPU**:
+
+* Wi-Fi saturated by video stream
+* Subscriber machine can’t keep up decoding / processing
+
+Do these:
+
+* Prefer Ethernet
+* Reduce ZED resolution/FPS
+* Confirm you are using `/compressed` (not raw image)
+* Don’t run `ros2 topic echo` continuously on image topics (it can become the bottleneck)
+
+---
+
+# One quick “does zenoh help?” test
+
+After everything is running, compare on Laptop 2:
+
+```bash
+ros2 topic hz /zed/zed_node/rgb/color/rect/image/compressed
+```
+
+
