@@ -14,14 +14,14 @@ It adds:
 When you run:
 
 ```bash
-PYTHONNOUSERSITE=1 python3 scripts/splatam.py configs/zed/zed_ros_stream.py
+PYTHONNOUSERSITE=1 python3 scripts/splatam_zed_zed.py configs/zed/zed_ros_stream.py
 ````
 
 the following pipeline runs:
 
 1. **Config loads**
 
-   * `scripts/splatam.py` loads your config python file.
+   * `scripts/splatam_zed.py` loads your config python file.
    * Sets seed, picks GPU (`primary_device="cuda:0"`), creates output dirs.
 
 2. **Dataset is created**
@@ -289,7 +289,7 @@ Frames must be time-aligned:
 
 ```bash
 conda activate splatam_v2
-PYTHONNOUSERSITE=1 python3 scripts/splatam.py configs/zed/zed_ros_stream.py
+PYTHONNOUSERSITE=1 python3 scripts/splatam_zed_zed.py configs/zed/zed_ros_stream.py
 ```
 
 ### 4.2 ROS2
@@ -327,14 +327,14 @@ ros2 topic hz <DEPTH_TOPIC>
 ```bash
 cd ~/VEIL/SplaTAM
 conda activate splatam_v2
-PYTHONNOUSERSITE=1 python3 scripts/splatam.py configs/zed/zed_ros_stream.py
+PYTHONNOUSERSITE=1 python3 scripts/splatam_zed.py configs/zed/zed_ros_stream.py
 ```
 
 ---
 
 ## 6) Live visualization (“real-time splatting”)
 
-Rendering is implemented in `scripts/splatam.py` via a helper like `live_render(...)` that:
+Rendering is implemented in `scripts/splatam_zed.py` via a helper like `live_render(...)` that:
 
 * transforms gaussians to the current frame
 * renders with `GaussianRasterizer`
@@ -407,7 +407,7 @@ ros2 topic echo <DEPTH_TOPIC> --once
 
 cd ~/VEIL/SplaTAM
 conda activate splatam_v2
-PYTHONNOUSERSITE=1 python3 scripts/splatam.py configs/zed/zed_ros_stream.py
+PYTHONNOUSERSITE=1 python3 scripts/splatam_zed.py configs/zed/zed_ros_stream.py
 ```
 
 ---
