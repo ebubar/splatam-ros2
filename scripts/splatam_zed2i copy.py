@@ -433,7 +433,6 @@ def add_new_gaussians(params, variables, curr_data, sil_thres,
 
 
 def initialize_camera_pose(params, curr_time_idx, forward_prop):
-
     with torch.no_grad():
         if curr_time_idx > 1 and forward_prop:
             # Initialize the camera pose for the current frame based on a constant velocity model
@@ -735,67 +734,40 @@ def rgbd_slam(config: dict):
                 keyframe_list.append(curr_keyframe)
     else:
         checkpoint_time_idx = 0
+    
     # Iterate over Scan
     for time_idx in tqdm(range(checkpoint_time_idx, num_frames)):
+        # Load RGBD frames incrementally instead of all frames
         color, depth, _, gt_pose = dataset[time_idx]
+        # Process poses
         gt_w2c = torch.linalg.inv(gt_pose)
-
+        # Process RGB-D Data
         color = color.permute(2, 0, 1) / 255
         depth = depth.permute(2, 0, 1)
-
         gt_w2c_all_frames.append(gt_w2c)
         curr_gt_w2c = gt_w2c_all_frames
+        # Optimize only current time step for tracking
         iter_time_idx = time_idx
-
-        # ✅ If tracking uses separate resolution, LOAD IT HERE (inside loop!)
+        # Initialize Mapping Data for selected frame
+        curr_data = {'cam': cam, 'im': color, 'depth': depth, 'id': iter_time_idx, 'intrinsics': intrinsics, 
+                     'w2c': first_frame_w2c, 'iter_gt_w2c_list': curr_gt_w2c}
+        
+        # Initialize Data for Tracking
         if seperate_tracking_res:
             tracking_color, tracking_depth, _, _ = tracking_dataset[time_idx]
             tracking_color = tracking_color.permute(2, 0, 1) / 255
             tracking_depth = tracking_depth.permute(2, 0, 1)
-
-        # ✅ Initialize pose guess ONCE
-        if time_idx > 0:
-            params = initialize_camera_pose(
-                params, time_idx,
-                forward_prop=config['tracking']['forward_prop']
-            )
-            curr_est_w2c = w2c_from_params(params, time_idx)
-        else:
-            curr_est_w2c = first_frame_w2c
-
-        # ✅ Mapping data uses the pose guess
-        curr_data = {
-            'cam': cam,
-            'im': color,
-            'depth': depth,
-            'id': iter_time_idx,
-            'intrinsics': intrinsics,
-            'w2c': curr_est_w2c,
-            'iter_gt_w2c_list': curr_gt_w2c
-        }
-
-        # ✅ Tracking data uses tracking frames (if separate res)
-        if seperate_tracking_res:
-            tracking_curr_data = {
-                'cam': tracking_cam,
-                'im': tracking_color,
-                'depth': tracking_depth,
-                'id': iter_time_idx,
-                'intrinsics': tracking_intrinsics,
-                'w2c': curr_est_w2c,
-                'iter_gt_w2c_list': curr_gt_w2c
-            }
+            tracking_curr_data = {'cam': tracking_cam, 'im': tracking_color, 'depth': tracking_depth, 'id': iter_time_idx,
+                                  'intrinsics': tracking_intrinsics, 'w2c': first_frame_w2c, 'iter_gt_w2c_list': curr_gt_w2c}
         else:
             tracking_curr_data = curr_data
 
-
-
         # Optimization Iterations
         num_iters_mapping = config['mapping']['num_iters']
-
-        curr_data["w2c"] = curr_est_w2c
-        tracking_curr_data["w2c"] = curr_est_w2c
-
+        
+        # Initialize the camera pose for the current frame
+        if time_idx > 0:
+            params = initialize_camera_pose(params, time_idx, forward_prop=config['tracking']['forward_prop'])
 
         # Tracking
         tracking_start_time = time.time()
@@ -813,19 +785,12 @@ def rgbd_slam(config: dict):
             progress_bar = tqdm(range(num_iters_tracking), desc=f"Tracking Time Step: {time_idx}")
             while True:
                 iter_start_time = time.time()
-
-                # IMPORTANT: pose must be updated every iteration
-                tracking_curr_data["w2c"] = w2c_from_params(params, time_idx)
-
                 # Loss for current frame
                 loss, variables, losses = get_loss(params, tracking_curr_data, variables, iter_time_idx, config['tracking']['loss_weights'],
-                    config['tracking']['use_sil_for_loss'], config['tracking']['sil_thres'],
-                    config['tracking']['use_l1'], config['tracking']['ignore_outlier_depth_loss'],
-                    tracking=True, plot_dir=eval_dir,
-                    visualize_tracking_loss=config['tracking']['visualize_tracking_loss'],
-                    tracking_iteration=iter
-                )
-
+                                                   config['tracking']['use_sil_for_loss'], config['tracking']['sil_thres'],
+                                                   config['tracking']['use_l1'], config['tracking']['ignore_outlier_depth_loss'], tracking=True, 
+                                                   plot_dir=eval_dir, visualize_tracking_loss=config['tracking']['visualize_tracking_loss'],
+                                                   tracking_iteration=iter)
                 if config['use_wandb']:
                     # Report Loss
                     wandb_tracking_step = report_loss(losses, wandb_run, wandb_tracking_step, tracking=True)
@@ -873,11 +838,6 @@ def rgbd_slam(config: dict):
             with torch.no_grad():
                 params['cam_unnorm_rots'][..., time_idx] = candidate_cam_unnorm_rot
                 params['cam_trans'][..., time_idx] = candidate_cam_tran
-                # IMPORTANT: update pose dicts after final tracking result
-                curr_est_w2c = w2c_from_params(params, time_idx)
-                curr_data["w2c"] = curr_est_w2c
-                tracking_curr_data["w2c"] = curr_est_w2c
-
         elif time_idx > 0 and config['tracking']['use_gt_poses']:
             with torch.no_grad():
                 # Get the ground truth pose relative to frame 0
@@ -919,16 +879,8 @@ def rgbd_slam(config: dict):
                     densify_color, densify_depth, _, _ = densify_dataset[time_idx]
                     densify_color = densify_color.permute(2, 0, 1) / 255
                     densify_depth = densify_depth.permute(2, 0, 1)
-                    densify_curr_data = {
-                        'cam': densify_cam,
-                        'im': densify_color,
-                        'depth': densify_depth,
-                        'id': time_idx,
-                        'intrinsics': densify_intrinsics,
-                        'w2c': w2c_from_params(params, time_idx),
-                        'iter_gt_w2c_list': curr_gt_w2c
-                    }
-
+                    densify_curr_data = {'cam': densify_cam, 'im': densify_color, 'depth': densify_depth, 'id': time_idx, 
+                                 'intrinsics': densify_intrinsics, 'w2c': first_frame_w2c, 'iter_gt_w2c_list': curr_gt_w2c}
                 else:
                     densify_curr_data = curr_data
 
@@ -985,18 +937,8 @@ def rgbd_slam(config: dict):
                     iter_color = keyframe_list[selected_rand_keyframe_idx]['color']
                     iter_depth = keyframe_list[selected_rand_keyframe_idx]['depth']
                 iter_gt_w2c = gt_w2c_all_frames[:iter_time_idx+1]
-
-                iter_data = {
-                    'cam': cam,
-                    'im': iter_color,
-                    'depth': iter_depth,
-                    'id': iter_time_idx,
-                    'intrinsics': intrinsics,
-                    'w2c': w2c_from_params(params, iter_time_idx),
-                    'iter_gt_w2c_list': iter_gt_w2c
-                }
-
-
+                iter_data = {'cam': cam, 'im': iter_color, 'depth': iter_depth, 'id': iter_time_idx, 
+                             'intrinsics': intrinsics, 'w2c': first_frame_w2c, 'iter_gt_w2c_list': iter_gt_w2c}
                 # Loss for current frame
                 loss, variables, losses = get_loss(params, iter_data, variables, iter_time_idx, config['mapping']['loss_weights'],
                                                 config['mapping']['use_sil_for_loss'], config['mapping']['sil_thres'],
