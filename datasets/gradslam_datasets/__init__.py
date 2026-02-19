@@ -11,3 +11,4 @@ from .record3d import Record3DDataset
 from .tum import TUMDataset
 from .scannetpp import ScannetPPDataset
 from .nerfcapture import NeRFCaptureDataset
+from .zed2i_ros2 import ZedRos2Dataset
