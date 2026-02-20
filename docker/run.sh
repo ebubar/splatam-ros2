@@ -53,6 +53,8 @@ docker run --rm -it \
   --shm-size=16g \
   --network host \
   -e DISPLAY=$DISPLAY \
+  -e ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-}" \
+  -e CYCLONEDDS_URI="${CYCLONEDDS_URI:-}" \
   -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
   -v "$(pwd)":/SplaTAM \
   -w /SplaTAM \

@@ -37,6 +37,185 @@ from utils.slam_external import calc_ssim, build_rotation, prune_gaussians, dens
 from diff_gaussian_rasterization import GaussianRasterizer as Renderer
 
 
+# ============================================================================
+# ROS2 Dataset Handler for Real-Time Input
+# ============================================================================
+class ROS2Dataset:
+    """Subscribes to ROS2 topics for real-time SLAM input.
+    
+    Expects topics:
+    - /splatam/input/image_rgb: sensor_msgs/Image (RGB8)
+    - /splatam/input/image_depth: sensor_msgs/Image (float32, meters)
+    - /splatam/input/pose: geometry_msgs/PoseStamped (camera pose in world frame)
+    """
+    
+    def __init__(self, config_dict, desired_height=480, desired_width=640, device="cuda:0", dtype=torch.float, **kwargs):
+        import rclpy
+        from rclpy.node import Node
+        from sensor_msgs.msg import Image
+        from geometry_msgs.msg import PoseStamped
+        import threading
+        import queue
+        
+        self.config_dict = config_dict
+        self.desired_height = desired_height
+        self.desired_width = desired_width
+        self.device = device
+        self.dtype = dtype
+        self.frame_queue = queue.Queue(maxsize=10)
+        self.pose_queue = queue.Queue(maxsize=10)
+        self.frame_count = 0
+        self.stop_event = threading.Event()
+        
+        # Initialize ROS2 node
+        if not rclpy.ok():
+            rclpy.init()
+        
+        self.node = Node('splatam_subscriber')
+        
+        # Subscribers
+        self.rgb_sub = self.node.create_subscription(
+            Image, '/splatam/input/image_rgb', self._rgb_callback, 10
+        )
+        self.depth_sub = self.node.create_subscription(
+            Image, '/splatam/input/image_depth', self._depth_callback, 10
+        )
+        self.pose_sub = self.node.create_subscription(
+            PoseStamped, '/splatam/input/pose', self._pose_callback, 10
+        )
+        
+        # Spin in background thread
+        self.spin_thread = threading.Thread(target=self._spin_ros, daemon=True)
+        self.spin_thread.start()
+        
+    def _rgb_callback(self, msg):
+        try:
+            # Manually convert sensor_msgs/Image to numpy
+            import numpy as np
+            rgb = np.frombuffer(msg.data, dtype=np.uint8).reshape((msg.height, msg.width, 3))
+            self.frame_queue.put(('rgb', rgb, msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9))
+        except Exception as e:
+            self.node.get_logger().warn(f"RGB callback error: {e}")
+    
+    def _depth_callback(self, msg):
+        try:
+            # Manually convert sensor_msgs/Image to numpy (float32)
+            import numpy as np
+            depth = np.frombuffer(msg.data, dtype=np.float32).reshape((msg.height, msg.width))
+            self.frame_queue.put(('depth', depth, msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9))
+        except Exception as e:
+            self.node.get_logger().warn(f"Depth callback error: {e}")
+    
+    def _pose_callback(self, msg):
+        try:
+            import numpy as np
+            p = msg.pose.position
+            o = msg.pose.orientation
+            pose = np.array([p.x, p.y, p.z, o.x, o.y, o.z, o.w])
+            self.pose_queue.put(pose)
+        except Exception as e:
+            self.node.get_logger().warn(f"Pose callback error: {e}")
+    
+    def _spin_ros(self):
+        import rclpy
+        while not self.stop_event.is_set():
+            rclpy.spin_once(self.node, timeout_sec=0.01)
+    
+    def __len__(self):
+        return 10000  # Arbitrarily large for live streaming
+    
+    def __getitem__(self, idx):
+        """Returns (color, depth, intrinsics, pose) tuple."""
+        import numpy as np
+        
+        # For live ROS2, we ignore idx and pull latest data
+        try:
+            # Collect all available frames
+            rgb = None
+            depth = None
+            ts = 0
+            
+            while not self.frame_queue.empty():
+                typ, data, t = self.frame_queue.get_nowait()
+                if typ == 'rgb':
+                    rgb = data
+                    ts = t
+                elif typ == 'depth':
+                    depth = data
+            
+            # Intrinsics from config (ZED2i VGA defaults if not set)
+            H, W = self.desired_height, self.desired_width
+            if 'camera_params' in self.config_dict:
+                cp = self.config_dict['camera_params']
+                fx, fy = cp.get('fx', 350.0), cp.get('fy', 350.0)
+                cx, cy = cp.get('cx', W/2), cp.get('cy', H/2)
+            else:
+                fx, fy, cx, cy = 350.0, 350.0, W/2, H/2
+            intrinsics = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
+            
+            # Default identity pose if not available
+            pose = np.eye(4)
+            if not self.pose_queue.empty():
+                p = self.pose_queue.get_nowait()
+                # Convert position
+                pose[0, 3], pose[1, 3], pose[2, 3] = p[0], p[1], p[2]
+            
+            # Return dummy data if no frames yet
+            if rgb is None:
+                rgb = np.zeros((H, W, 3), dtype=np.uint8)
+            if depth is None:
+                depth = np.ones((H, W), dtype=np.float32) * 0.5
+            
+            # Ensure depth has shape (H, W, 1) for compatibility
+            if depth.ndim == 2:
+                depth = depth[:, :, np.newaxis]
+            
+            # Resize to desired resolution (like other datasets do)
+            import cv2
+            if rgb.shape[0] != self.desired_height or rgb.shape[1] != self.desired_width:
+                rgb = cv2.resize(rgb, (self.desired_width, self.desired_height), interpolation=cv2.INTER_LINEAR)
+            if depth.shape[0] != self.desired_height or depth.shape[1] != self.desired_width:
+                depth = cv2.resize(depth[:,:,0], (self.desired_width, self.desired_height), interpolation=cv2.INTER_NEAREST)
+                depth = depth[:, :, np.newaxis]
+            
+            # Scale intrinsics if image was resized
+            if rgb.shape[0] != 480 or rgb.shape[1] != 640:
+                scale_x = self.desired_width / rgb.shape[1] if rgb.shape[1] > 0 else 1.0
+                scale_y = self.desired_height / rgb.shape[0] if rgb.shape[0] > 0 else 1.0
+                intrinsics[0, 0] *= scale_x  # fx
+                intrinsics[1, 1] *= scale_y  # fy
+                intrinsics[0, 2] *= scale_x  # cx
+                intrinsics[1, 2] *= scale_y  # cy
+            
+            color_t = torch.from_numpy(rgb).float() / 255.0
+            depth_t = torch.from_numpy(depth).float()
+            intrinsics_t = torch.from_numpy(intrinsics).float()
+            pose_t = torch.from_numpy(pose).float()
+            
+            # Move to device like other datasets do
+            return (
+                color_t.to(self.device).type(self.dtype),
+                depth_t.to(self.device).type(self.dtype),
+                intrinsics_t.to(self.device).type(self.dtype),
+                pose_t.to(self.device).type(self.dtype),
+            )
+        
+        except Exception as e:
+            print(f"ROS2Dataset error: {e}")
+            import numpy as np
+            H, W = self.desired_height, self.desired_width
+            color_t = torch.zeros(H, W, 3)
+            depth_t = torch.ones(H, W, 1) * 0.5
+            intrinsics_t = torch.eye(3)
+            pose_t = torch.eye(4)
+            return (
+                color_t.to(self.device).type(self.dtype),
+                depth_t.to(self.device).type(self.dtype),
+                intrinsics_t.to(self.device).type(self.dtype),
+                pose_t.to(self.device).type(self.dtype),
+            )
+
+
 def get_dataset(config_dict, basedir, sequence, **kwargs):
     if config_dict["dataset_name"].lower() in ["icl"]:
         return ICLDataset(config_dict, basedir, sequence, **kwargs)
@@ -60,6 +239,9 @@ def get_dataset(config_dict, basedir, sequence, **kwargs):
         return ScannetPPDataset(basedir, sequence, **kwargs)
     elif config_dict["dataset_name"].lower() in ["nerfcapture"]:
         return NeRFCaptureDataset(basedir, sequence, **kwargs)
+    elif config_dict["dataset_name"].lower() in ["zed2i_ros2"]:
+        # ROS2 dataset: read from /splatam/input/* topics
+        return ROS2Dataset(config_dict, **kwargs)
     else:
         raise ValueError(f"Unknown dataset name {config_dict['dataset_name']}")
 
@@ -248,13 +430,23 @@ def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_
     rendervar['means2D'].retain_grad()
     im, radius, _, = Renderer(raster_settings=curr_data['cam'])(**rendervar)
     variables['means2D'] = rendervar['means2D']  # Gradient only accum from colour render for densification
+    
+    # Resize rendered RGB to match input RGB shape if needed
+    if im.shape != curr_data['im'].shape:
+        im = torch.nn.functional.interpolate(im.unsqueeze(0), size=tuple(curr_data['im'].shape[1:]), mode='bilinear', align_corners=False).squeeze(0)
 
     # Depth & Silhouette Rendering
     depth_sil, _, _, = Renderer(raster_settings=curr_data['cam'])(**depth_sil_rendervar)
     depth = depth_sil[0, :, :].unsqueeze(0)
     silhouette = depth_sil[1, :, :]
-    presence_sil_mask = (silhouette > sil_thres)
     depth_sq = depth_sil[2, :, :].unsqueeze(0)
+    
+    # Resize rendered depth and depth_sq to match input depth shape if needed
+    if depth.shape != curr_data['depth'].shape:
+        depth = torch.nn.functional.interpolate(depth.unsqueeze(0), size=tuple(curr_data['depth'].shape[1:]), mode='bilinear', align_corners=False).squeeze(0)
+        depth_sq = torch.nn.functional.interpolate(depth_sq.unsqueeze(0), size=tuple(curr_data['depth'].shape[1:]), mode='bilinear', align_corners=False).squeeze(0)
+    
+    presence_sil_mask = (silhouette > sil_thres)
     uncertainty = depth_sq - depth**2
     uncertainty = uncertainty.detach()
 

@@ -44,6 +44,27 @@ def save_ply(path, means, scales, rotations, rgbs, opacities, normals=None):
     print(f"Saved PLY format Splat to {path}")
 
 
+def save_ply_rgb(path, means, rgbs):
+    """Save a simple RGB PLY with position + uint8 RGB for WebGL viewers."""
+    # Ensure rgb in 0..1, convert to 0..255 uint8
+    rgb_vals = (rgbs * 255.0).clip(0, 255).astype(np.uint8)
+
+    dtype_simple = [('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
+                    ('red', 'u1'), ('green', 'u1'), ('blue', 'u1')]
+    elements = np.empty(means.shape[0], dtype=dtype_simple)
+
+    elements['x'] = means[:, 0].astype(np.float32)
+    elements['y'] = means[:, 1].astype(np.float32)
+    elements['z'] = means[:, 2].astype(np.float32)
+    elements['red'] = rgb_vals[:, 0]
+    elements['green'] = rgb_vals[:, 1]
+    elements['blue'] = rgb_vals[:, 2]
+
+    el = PlyElement.describe(elements, 'vertex')
+    PlyData([el]).write(path)
+    print(f"Saved simple RGB PLY to {path}")
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("config", type=str, help="Path to config file.")
@@ -70,3 +91,6 @@ if __name__ == "__main__":
     ply_path = os.path.join(work_path, run_name, "splat.ply")
 
     save_ply(ply_path, means, scales, rotations, rgbs, opacities)
+    # Also write a simple RGB PLY (uint8 colors) for WebGL viewers
+    rgb_ply_path = os.path.join(work_path, run_name, "splat_rgb.ply")
+    save_ply_rgb(rgb_ply_path, means, rgbs)
