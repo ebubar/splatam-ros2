@@ -1,5 +1,3 @@
-# scripts/splatam_zed2i.py
-
 import argparse
 import os
 import shutil
@@ -22,10 +20,10 @@ import torch
 import torch.nn.functional as F
 from tqdm import tqdm
 import wandb
-
+from datasets.gradslam_datasets.zed2i_ros2 import ZEDROS2Dataset
 from datasets.gradslam_datasets import (load_dataset_config, ICLDataset, ReplicaDataset, ReplicaV2Dataset, AzureKinectDataset,
                                         ScannetDataset, Ai2thorDataset, Record3DDataset, RealsenseDataset, TUMDataset,
-                                        ScannetPPDataset, NeRFCaptureDataset, ZedRos2Dataset)
+                                        ScannetPPDataset, NeRFCaptureDataset)
 from utils.common_utils import seed_everything, save_params_ckpt, save_params
 from utils.eval_helpers import report_loss, report_progress, eval
 from utils.keyframe_selection import keyframe_selection_overlap
@@ -62,10 +60,11 @@ def get_dataset(config_dict, basedir, sequence, **kwargs):
         return ScannetPPDataset(basedir, sequence, **kwargs)
     elif config_dict["dataset_name"].lower() in ["nerfcapture"]:
         return NeRFCaptureDataset(basedir, sequence, **kwargs)
-    elif config_dict["dataset_name"].lower() in ["zed", "zed2i", "zed2i_ros2"]:
-        return ZedRos2Dataset(config_dict, basedir, sequence, **kwargs)     
+    elif config_dict["dataset_name"].lower() in ["zed2i_ros2", "zed_ros2", "zed"]:
+        return ZEDROS2Dataset(config_dict, basedir, sequence, **kwargs)    
     else:
         raise ValueError(f"Unknown dataset name {config_dict['dataset_name']}")
+
 
 
 def get_pointcloud(color, depth, intrinsics, w2c, transform_pts=True, 
@@ -119,14 +118,6 @@ def get_pointcloud(color, depth, intrinsics, w2c, transform_pts=True,
         return point_cld, mean3_sq_dist
     else:
         return point_cld
-
-def w2c_from_params(params, t):
-    rot = F.normalize(params["cam_unnorm_rots"][..., t].detach())
-    tran = params["cam_trans"][..., t].detach()
-    w2c = torch.eye(4, device=tran.device, dtype=torch.float32)
-    w2c[:3, :3] = build_rotation(rot)
-    w2c[:3, 3] = tran
-    return w2c
 
 
 def initialize_params(init_pt_cld, num_frames, mean3_sq_dist, gaussian_distribution):
@@ -433,7 +424,6 @@ def add_new_gaussians(params, variables, curr_data, sil_thres,
 
 
 def initialize_camera_pose(params, curr_time_idx, forward_prop):
-
     with torch.no_grad():
         if curr_time_idx > 1 and forward_prop:
             # Initialize the camera pose for the current frame based on a constant velocity model
@@ -529,103 +519,40 @@ def rgbd_slam(config: dict):
         else:
             seperate_tracking_res = False
     # Poses are relative to the first frame
-    # dataset = get_dataset(
-    #     config_dict=gradslam_data_cfg,
-    #     basedir=dataset_config["basedir"],
-    #     sequence=os.path.basename(dataset_config["sequence"]),
-    #     start=dataset_config["start"],
-    #     end=dataset_config["end"],
-    #     stride=dataset_config["stride"],
-    #     desired_height=dataset_config["desired_image_height"],
-    #     desired_width=dataset_config["desired_image_width"],
-    #     device=device,
-    #     relative_pose=True,
-    #     ignore_bad=dataset_config["ignore_bad"],
-    #     use_train_split=dataset_config["use_train_split"],
-    #     num_frames=dataset_config.get("num_frames", -1),
-
-    #     rgb_topic=dataset_config.get("rgb_topic"),
-    #     depth_topic=dataset_config.get("depth_topic"),
-    #     cam_info_topic=dataset_config.get("cam_info_topic"),
-    #     slop_sec=dataset_config.get("slop_sec", 0.1),
-    #     queue_size=dataset_config.get("queue_size", 30),
-    #     wait_timeout_sec=dataset_config.get("wait_timeout_sec", 20),
-    # )
-    # Build kwargs safely (avoid passing duplicates like basedir/sequence)
-    # ---------------------------
-    # Build dataset kwargs once
-    # ---------------------------
-    dataset_kwargs = dataset_config.copy()
-
-    # Keys that should NOT be forwarded as kwargs
-    dataset_kwargs.pop("dataset_name", None)
-    dataset_kwargs.pop("gradslam_data_cfg", None)
-    dataset_kwargs.pop("basedir", None)
-    dataset_kwargs.pop("sequence", None)
-    dataset_kwargs.pop("densification_image_height", None)
-    dataset_kwargs.pop("densification_image_width", None)
-    dataset_kwargs.pop("tracking_image_height", None)
-    dataset_kwargs.pop("tracking_image_width", None)
-
-    # Standardize desired size param names (depends on dataset __init__)
-    # If your datasets expect desired_height/desired_width, do this:
-    dataset_kwargs["desired_height"] = dataset_config["desired_image_height"]
-    dataset_kwargs["desired_width"]  = dataset_config["desired_image_width"]
-    dataset_kwargs.pop("desired_image_height", None)
-    dataset_kwargs.pop("desired_image_width", None)
-
-    # ---------------------------
-    # Create dataset ONCE
-    # ---------------------------
     dataset = get_dataset(
         config_dict=gradslam_data_cfg,
         basedir=dataset_config["basedir"],
         sequence=os.path.basename(dataset_config["sequence"]),
+        start=dataset_config["start"],
+        end=dataset_config["end"],
+        stride=dataset_config["stride"],
+        desired_height=dataset_config["desired_image_height"],
+        desired_width=dataset_config["desired_image_width"],
         device=device,
         relative_pose=True,
-        **dataset_kwargs,
+        ignore_bad=dataset_config["ignore_bad"],
+        use_train_split=dataset_config["use_train_split"],
     )
-
-
-
     num_frames = dataset_config["num_frames"]
     if num_frames == -1:
         num_frames = len(dataset)
 
     # Init seperate dataloader for densification if required
     if seperate_densification_res:
-        # densify_dataset = get_dataset(
-        #     config_dict=gradslam_data_cfg,
-        #     basedir=dataset_config["basedir"],
-        #     sequence=os.path.basename(dataset_config["sequence"]),
-        #     start=dataset_config["start"],
-        #     end=dataset_config["end"],
-        #     stride=dataset_config["stride"],
-        #     desired_height=dataset_config["densification_image_height"],
-        #     desired_width=dataset_config["densification_image_width"],
-        #     device=device,
-        #     relative_pose=True,
-        #     ignore_bad=dataset_config["ignore_bad"],
-        #     use_train_split=dataset_config["use_train_split"],
-        # )
-        densify_kwargs = dataset_config.copy()
-        densify_kwargs.pop("basedir", None)
-        densify_kwargs.pop("sequence", None)
-        densify_kwargs.pop("densification_image_height", None)
-        densify_kwargs.pop("densification_image_width", None)
-
-        densify_kwargs["desired_height"] = dataset_config["densification_image_height"]
-        densify_kwargs["desired_width"]  = dataset_config["densification_image_width"]
-
         densify_dataset = get_dataset(
             config_dict=gradslam_data_cfg,
             basedir=dataset_config["basedir"],
             sequence=os.path.basename(dataset_config["sequence"]),
+            start=dataset_config["start"],
+            end=dataset_config["end"],
+            stride=dataset_config["stride"],
+            desired_height=dataset_config["densification_image_height"],
+            desired_width=dataset_config["densification_image_width"],
             device=device,
             relative_pose=True,
-            **densify_kwargs,
+            ignore_bad=dataset_config["ignore_bad"],
+            use_train_split=dataset_config["use_train_split"],
         )
-
         # Initialize Parameters, Canonical & Densification Camera parameters
         params, variables, intrinsics, first_frame_w2c, cam, \
             densify_intrinsics, densify_cam = initialize_first_timestep(dataset, num_frames,
@@ -642,41 +569,20 @@ def rgbd_slam(config: dict):
     
     # Init seperate dataloader for tracking if required
     if seperate_tracking_res:
-        # tracking_dataset = get_dataset(
-        #     config_dict=gradslam_data_cfg,
-        #     basedir=dataset_config["basedir"],
-        #     sequence=os.path.basename(dataset_config["sequence"]),
-        #     start=dataset_config["start"],
-        #     end=dataset_config["end"],
-        #     stride=dataset_config["stride"],
-        #     desired_height=dataset_config["tracking_image_height"],
-        #     desired_width=dataset_config["tracking_image_width"],
-        #     device=device,
-        #     relative_pose=True,
-        #     ignore_bad=dataset_config["ignore_bad"],
-        #     use_train_split=dataset_config["use_train_split"],
-        # )
-
-        tracking_kwargs = dataset_config.copy()
-        tracking_kwargs.pop("basedir", None)
-        tracking_kwargs.pop("sequence", None)
-
-        # REMOVE tracking-only keys so they don't get passed through as unexpected kwargs
-        tracking_kwargs.pop("tracking_image_height", None)
-        tracking_kwargs.pop("tracking_image_width", None)
-
-        tracking_kwargs["desired_height"] = dataset_config["tracking_image_height"]
-        tracking_kwargs["desired_width"]  = dataset_config["tracking_image_width"]
-            
         tracking_dataset = get_dataset(
             config_dict=gradslam_data_cfg,
             basedir=dataset_config["basedir"],
             sequence=os.path.basename(dataset_config["sequence"]),
+            start=dataset_config["start"],
+            end=dataset_config["end"],
+            stride=dataset_config["stride"],
+            desired_height=dataset_config["tracking_image_height"],
+            desired_width=dataset_config["tracking_image_width"],
             device=device,
             relative_pose=True,
-            **tracking_kwargs,
+            ignore_bad=dataset_config["ignore_bad"],
+            use_train_split=dataset_config["use_train_split"],
         )
-
         tracking_color, _, tracking_intrinsics, _ = tracking_dataset[0]
         tracking_color = tracking_color.permute(2, 0, 1) / 255 # (H, W, C) -> (C, H, W)
         tracking_intrinsics = tracking_intrinsics[:3, :3]
@@ -735,67 +641,40 @@ def rgbd_slam(config: dict):
                 keyframe_list.append(curr_keyframe)
     else:
         checkpoint_time_idx = 0
+    
     # Iterate over Scan
     for time_idx in tqdm(range(checkpoint_time_idx, num_frames)):
+        # Load RGBD frames incrementally instead of all frames
         color, depth, _, gt_pose = dataset[time_idx]
+        # Process poses
         gt_w2c = torch.linalg.inv(gt_pose)
-
+        # Process RGB-D Data
         color = color.permute(2, 0, 1) / 255
         depth = depth.permute(2, 0, 1)
-
         gt_w2c_all_frames.append(gt_w2c)
         curr_gt_w2c = gt_w2c_all_frames
+        # Optimize only current time step for tracking
         iter_time_idx = time_idx
-
-        # ✅ If tracking uses separate resolution, LOAD IT HERE (inside loop!)
+        # Initialize Mapping Data for selected frame
+        curr_data = {'cam': cam, 'im': color, 'depth': depth, 'id': iter_time_idx, 'intrinsics': intrinsics, 
+                     'w2c': first_frame_w2c, 'iter_gt_w2c_list': curr_gt_w2c}
+        
+        # Initialize Data for Tracking
         if seperate_tracking_res:
             tracking_color, tracking_depth, _, _ = tracking_dataset[time_idx]
             tracking_color = tracking_color.permute(2, 0, 1) / 255
             tracking_depth = tracking_depth.permute(2, 0, 1)
-
-        # ✅ Initialize pose guess ONCE
-        if time_idx > 0:
-            params = initialize_camera_pose(
-                params, time_idx,
-                forward_prop=config['tracking']['forward_prop']
-            )
-            curr_est_w2c = w2c_from_params(params, time_idx)
-        else:
-            curr_est_w2c = first_frame_w2c
-
-        # ✅ Mapping data uses the pose guess
-        curr_data = {
-            'cam': cam,
-            'im': color,
-            'depth': depth,
-            'id': iter_time_idx,
-            'intrinsics': intrinsics,
-            'w2c': curr_est_w2c,
-            'iter_gt_w2c_list': curr_gt_w2c
-        }
-
-        # ✅ Tracking data uses tracking frames (if separate res)
-        if seperate_tracking_res:
-            tracking_curr_data = {
-                'cam': tracking_cam,
-                'im': tracking_color,
-                'depth': tracking_depth,
-                'id': iter_time_idx,
-                'intrinsics': tracking_intrinsics,
-                'w2c': curr_est_w2c,
-                'iter_gt_w2c_list': curr_gt_w2c
-            }
+            tracking_curr_data = {'cam': tracking_cam, 'im': tracking_color, 'depth': tracking_depth, 'id': iter_time_idx,
+                                  'intrinsics': tracking_intrinsics, 'w2c': first_frame_w2c, 'iter_gt_w2c_list': curr_gt_w2c}
         else:
             tracking_curr_data = curr_data
 
-
-
         # Optimization Iterations
         num_iters_mapping = config['mapping']['num_iters']
-
-        curr_data["w2c"] = curr_est_w2c
-        tracking_curr_data["w2c"] = curr_est_w2c
-
+        
+        # Initialize the camera pose for the current frame
+        if time_idx > 0:
+            params = initialize_camera_pose(params, time_idx, forward_prop=config['tracking']['forward_prop'])
 
         # Tracking
         tracking_start_time = time.time()
@@ -813,19 +692,12 @@ def rgbd_slam(config: dict):
             progress_bar = tqdm(range(num_iters_tracking), desc=f"Tracking Time Step: {time_idx}")
             while True:
                 iter_start_time = time.time()
-
-                # IMPORTANT: pose must be updated every iteration
-                tracking_curr_data["w2c"] = w2c_from_params(params, time_idx)
-
                 # Loss for current frame
                 loss, variables, losses = get_loss(params, tracking_curr_data, variables, iter_time_idx, config['tracking']['loss_weights'],
-                    config['tracking']['use_sil_for_loss'], config['tracking']['sil_thres'],
-                    config['tracking']['use_l1'], config['tracking']['ignore_outlier_depth_loss'],
-                    tracking=True, plot_dir=eval_dir,
-                    visualize_tracking_loss=config['tracking']['visualize_tracking_loss'],
-                    tracking_iteration=iter
-                )
-
+                                                   config['tracking']['use_sil_for_loss'], config['tracking']['sil_thres'],
+                                                   config['tracking']['use_l1'], config['tracking']['ignore_outlier_depth_loss'], tracking=True, 
+                                                   plot_dir=eval_dir, visualize_tracking_loss=config['tracking']['visualize_tracking_loss'],
+                                                   tracking_iteration=iter)
                 if config['use_wandb']:
                     # Report Loss
                     wandb_tracking_step = report_loss(losses, wandb_run, wandb_tracking_step, tracking=True)
@@ -873,11 +745,6 @@ def rgbd_slam(config: dict):
             with torch.no_grad():
                 params['cam_unnorm_rots'][..., time_idx] = candidate_cam_unnorm_rot
                 params['cam_trans'][..., time_idx] = candidate_cam_tran
-                # IMPORTANT: update pose dicts after final tracking result
-                curr_est_w2c = w2c_from_params(params, time_idx)
-                curr_data["w2c"] = curr_est_w2c
-                tracking_curr_data["w2c"] = curr_est_w2c
-
         elif time_idx > 0 and config['tracking']['use_gt_poses']:
             with torch.no_grad():
                 # Get the ground truth pose relative to frame 0
@@ -919,16 +786,8 @@ def rgbd_slam(config: dict):
                     densify_color, densify_depth, _, _ = densify_dataset[time_idx]
                     densify_color = densify_color.permute(2, 0, 1) / 255
                     densify_depth = densify_depth.permute(2, 0, 1)
-                    densify_curr_data = {
-                        'cam': densify_cam,
-                        'im': densify_color,
-                        'depth': densify_depth,
-                        'id': time_idx,
-                        'intrinsics': densify_intrinsics,
-                        'w2c': w2c_from_params(params, time_idx),
-                        'iter_gt_w2c_list': curr_gt_w2c
-                    }
-
+                    densify_curr_data = {'cam': densify_cam, 'im': densify_color, 'depth': densify_depth, 'id': time_idx, 
+                                 'intrinsics': densify_intrinsics, 'w2c': first_frame_w2c, 'iter_gt_w2c_list': curr_gt_w2c}
                 else:
                     densify_curr_data = curr_data
 
@@ -985,18 +844,8 @@ def rgbd_slam(config: dict):
                     iter_color = keyframe_list[selected_rand_keyframe_idx]['color']
                     iter_depth = keyframe_list[selected_rand_keyframe_idx]['depth']
                 iter_gt_w2c = gt_w2c_all_frames[:iter_time_idx+1]
-
-                iter_data = {
-                    'cam': cam,
-                    'im': iter_color,
-                    'depth': iter_depth,
-                    'id': iter_time_idx,
-                    'intrinsics': intrinsics,
-                    'w2c': w2c_from_params(params, iter_time_idx),
-                    'iter_gt_w2c_list': iter_gt_w2c
-                }
-
-
+                iter_data = {'cam': cam, 'im': iter_color, 'depth': iter_depth, 'id': iter_time_idx, 
+                             'intrinsics': intrinsics, 'w2c': first_frame_w2c, 'iter_gt_w2c_list': iter_gt_w2c}
                 # Loss for current frame
                 loss, variables, losses = get_loss(params, iter_data, variables, iter_time_idx, config['mapping']['loss_weights'],
                                                 config['mapping']['use_sil_for_loss'], config['mapping']['sil_thres'],

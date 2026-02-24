@@ -1,112 +1,194 @@
-# configs/splatam_live.py
+import os
+from os.path import join as p_join
 
 primary_device = "cuda:0"
 seed = 0
 
-num_frames=100
+# --- ZED2i Live (ROS2) settings ---
+base_dir = "./experiments/zed2i_live"   # where results/checkpoints will be written
+scene_name = "zed2i_ros2_live"         # run folder name
+num_frames = 100             # run for this many frames (live)
+overwrite = False
 
+# These are only used for output organization in this config (not iPhone export)
+depth_scale = 1.0
 
-zed_rgb_topic = "/zed/zed_node/rgb/color/rect/image"          
-zed_depth_topic = "/zed/zed_node/depth/depth_registered" 
-zed_cam_info_topic = "/zed/zed_node/rgb/color/rect/camera_info"
-# zed_rgb_topic      = "/zed/zed_node/rgb/color/rect/image/compressed"
-# zed_depth_topic    = "/zed/zed_node/depth/depth_registered/compressedDepth"
-# zed_cam_info_topic = "/zed/zed_node/rgb/color/rect/camera_info"
+# Your ZED stream is 640x360
+desired_width = 640
+desired_height = 360
 
-slop_sec = 0.05
-queue_size = 30
-wait_timeout_sec = 20
+# Keep densify the same to start (simpler)
+densify_width = 640
+densify_height = 360
+
+map_every = 1
+if num_frames < 25:
+    keyframe_every = max(1, int(num_frames // 5))
+else:
+    keyframe_every = 5
+
+mapping_window_size = 32
+tracking_iters = 60
+mapping_iters = 60
 
 config = dict(
-    workdir="./experiments/ZED2i_Live",
-    run_name="SplaTAM_ZED2i_Live",
-    overwrite=True,
+    workdir=f"{base_dir}/{scene_name}",
+    run_name="SplaTAM_ZED2i_ROS2",
+    overwrite=overwrite,
+    depth_scale=depth_scale,  # not used by the ZED dataset, but kept for consistency
+    num_frames=num_frames,
     seed=seed,
     primary_device=primary_device,
-    report_iter_progress = False,
 
-    num_frames=num_frames,
+    map_every=map_every,
+    keyframe_every=keyframe_every,
+    mapping_window_size=mapping_window_size,
 
-    map_every=1,
-    keyframe_every=3,
-    mapping_window_size=32,
+    report_global_progress_every=100,
+    eval_every=1,
 
+    scene_radius_depth_ratio=3,
     mean_sq_dist_method="projective",
     gaussian_distribution="isotropic",
-    scene_radius_depth_ratio=3,
-    report_global_progress_every=50,
-    eval_every=999999,   
+
+    report_iter_progress=False,
+
+    load_checkpoint=False,
+    checkpoint_time_idx=0,
+
+    # ✅ you asked for this
+    save_checkpoints=True,
+    checkpoint_interval=5,
+
     use_wandb=False,
-    load_checkpoint = False,
-    checkpoint_time_idx = 0,
-    save_checkpoints = True,
-    checkpoint_interval = 5,
 
     data=dict(
+        # This MUST match your new dataset case in scripts/splatam.py
         dataset_name="zed2i_ros2",
-        basedir=".",
-        sequence="zed2i",
 
-        desired_image_height=360,
-        desired_image_width=640,
+        # This MUST point to the YAML you created for ZED2i topics + intrinsics
+        gradslam_data_cfg="configs/data/zed2i_ros2.yaml",
+
+        # Required by get_dataset() signature; ZEDROS2Dataset will ignore them
+        basedir=".",
+        sequence="zed_live",
+
+        desired_image_height=desired_height,
+        desired_image_width=desired_width,
+
+        densification_image_height=densify_height,
+        densification_image_width=densify_width,
 
         start=0,
         end=-1,
         stride=1,
+
+        # Keep in sync with top-level num_frames
         num_frames=num_frames,
-
-        rgb_topic=zed_rgb_topic,
-        depth_topic=zed_depth_topic,
-        cam_info_topic=zed_cam_info_topic,
-
-        # Sync tuning (we’ll tighten after you paste stamps)
-        slop_sec=slop_sec,
-        queue_size=queue_size,
-        wait_timeout_sec=wait_timeout_sec,
     ),
 
     tracking=dict(
         use_gt_poses=False,
         forward_prop=True,
         visualize_tracking_loss=False,
-        num_iters=20,
-        use_sil_for_loss=False,
-        sil_thres=0.9,
+
+        num_iters=tracking_iters,
+        use_sil_for_loss=True,
+        sil_thres=0.99,
         use_l1=True,
-        use_depth_loss_thres=False,
+
+        use_depth_loss_thres=True,
         depth_loss_thres=20000,
+
         ignore_outlier_depth_loss=False,
-        loss_weights=dict(im=0.5, depth=1.0),
+        use_uncertainty_for_loss_mask=False,
+        use_uncertainty_for_loss=False,
+        use_chamfer=False,
+
+        loss_weights=dict(
+            im=0.5,
+            depth=1.0,
+        ),
+
         lrs=dict(
-            means3D=0.0, rgb_colors=0.0, unnorm_rotations=0.0, logit_opacities=0.0, log_scales=0.0,
-            cam_unnorm_rots=0.001, cam_trans=0.002,
+            means3D=0.0,
+            rgb_colors=0.0,
+            unnorm_rotations=0.0,
+            logit_opacities=0.0,
+            log_scales=0.0,
+            cam_unnorm_rots=0.001,
+            cam_trans=0.004,
         ),
     ),
 
     mapping=dict(
-        num_iters=30,
+        num_iters=mapping_iters,
         add_new_gaussians=True,
+
         sil_thres=0.5,
         use_l1=True,
-        ignore_outlier_depth_loss=True,
-        use_sil_for_loss=True,
-        loss_weights=dict(im=0.5, depth=1.0),
-        lrs=dict(
-            means3D=0.0001, rgb_colors=0.0025, unnorm_rotations=0.001, logit_opacities=0.05, log_scales=0.001,
-            cam_unnorm_rots=0.0, cam_trans=0.0,
+        ignore_outlier_depth_loss=False,
+        use_sil_for_loss=False,
+
+        use_uncertainty_for_loss_mask=False,
+        use_uncertainty_for_loss=False,
+        use_chamfer=False,
+
+        loss_weights=dict(
+            im=0.5,
+            depth=1.0,
         ),
+
+        lrs=dict(
+            means3D=0.0001,
+            rgb_colors=0.0025,
+            unnorm_rotations=0.001,
+            logit_opacities=0.05,
+            log_scales=0.001,
+            cam_unnorm_rots=0.0000,
+            cam_trans=0.0000,
+        ),
+
         prune_gaussians=True,
         pruning_dict=dict(
-            start_after=0, remove_big_after=0, stop_after=20, prune_every=20,
-            removal_opacity_threshold=0.005, final_removal_opacity_threshold=0.005,
-            reset_opacities=False, reset_opacities_every=500,
+            start_after=0,
+            remove_big_after=0,
+            stop_after=20,
+            prune_every=20,
+            removal_opacity_threshold=0.005,
+            final_removal_opacity_threshold=0.005,
+            reset_opacities=False,
+            reset_opacities_every=500,
         ),
+
         use_gaussian_splatting_densification=False,
         densify_dict=dict(
-            start_after=500, remove_big_after=3000, stop_after=5000, densify_every=100,
-            grad_thresh=0.0002, num_to_split_into=2,
-            removal_opacity_threshold=0.005, final_removal_opacity_threshold=0.005,
+            start_after=500,
+            remove_big_after=3000,
+            stop_after=5000,
+            densify_every=100,
+            grad_thresh=0.0002,
+            num_to_split_into=2,
+            removal_opacity_threshold=0.005,
+            final_removal_opacity_threshold=0.005,
             reset_opacities_every=3000,
         ),
+    ),
+
+    viz=dict(
+        render_mode='color',
+        offset_first_viz_cam=True,
+        show_sil=False,
+        visualize_cams=True,
+
+        viz_w=600,
+        viz_h=340,
+
+        viz_near=0.01,
+        viz_far=100.0,
+
+        view_scale=2,
+        viz_fps=5,
+        enter_interactive_post_online=False,
     ),
 )

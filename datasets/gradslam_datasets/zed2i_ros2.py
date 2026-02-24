@@ -1,429 +1,355 @@
-# datasets/gradslam_datasets/zed2i_ros2.py
+# datasets/gradslam_datasets/zed_ros2.py
 
 import threading
 import time
-import struct
-from dataclasses import dataclass
-from typing import Optional, Tuple, Union
+from collections import deque
+from typing import Optional, Tuple
 
+import cv2
 import numpy as np
 import torch
-import cv2
 
+# ROS2
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
-from sensor_msgs.msg import Image, CameraInfo, CompressedImage
-from message_filters import Subscriber, ApproximateTimeSynchronizer
-from cv_bridge import CvBridge
+from sensor_msgs.msg import Image, CameraInfo
+
+try:
+    from cv_bridge import CvBridge
+except ImportError as e:
+    raise ImportError(
+        "cv_bridge not found. Make sure ROS2 Python environment is sourced and "
+        "python3-cv-bridge is installed for your ROS distro."
+    ) from e
+
+try:
+    import message_filters
+except ImportError as e:
+    raise ImportError(
+        "message_filters not found. Install the ROS2 python message_filters package."
+    ) from e
 
 
-PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+def _as_intrinsics_4x4(K3: np.ndarray) -> torch.Tensor:
+    """Return 4x4 intrinsics with K in top-left."""
+    intr = torch.eye(4, dtype=torch.float32)
+    intr[:3, :3] = torch.from_numpy(K3.astype(np.float32))
+    return intr
 
 
-def _scale_intrinsics(K: np.ndarray, h_scale: float, w_scale: float) -> np.ndarray:
-    """Scale intrinsics to match resized image."""
-    K2 = K.copy()
-    K2[0, 0] *= w_scale  # fx
-    K2[1, 1] *= h_scale  # fy
-    K2[0, 2] *= w_scale  # cx
-    K2[1, 2] *= h_scale  # cy
-    return K2
-
-
-def _stamp_to_sec(stamp) -> float:
-    return float(stamp.sec) + float(stamp.nanosec) * 1e-9
-
-
-def _parse_compressed_depth_encoding(fmt: str) -> str:
+class _ZedROS2Node(Node):
     """
-    CompressedImage.format often looks like:
-      "32FC1; compressedDepth" or "16UC1; compressedDepth"
-    We want the encoding part (32FC1 / 16UC1).
+    Internal ROS2 node that synchronizes RGB + depth (registered) and stores
+    frames into a ring buffer.
     """
-    if not fmt:
-        return ""
-    if ";" in fmt:
-        return fmt.split(";", 1)[0].strip()
-    return fmt.strip()
 
-
-def decode_compressed_rgb_to_bgr(msg: CompressedImage) -> np.ndarray:
-    """
-    Decode CompressedImage RGB topic to BGR uint8 (OpenCV order).
-    ZED compressed RGB is typically JPEG.
-    """
-    buf = np.frombuffer(msg.data, dtype=np.uint8)
-    img = cv2.imdecode(buf, cv2.IMREAD_UNCHANGED)
-    if img is None:
-        raise RuntimeError("RGB compressed decode failed (cv2.imdecode returned None)")
-    if img.ndim == 2:
-        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-    elif img.ndim == 3 and img.shape[2] == 4:
-        img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-    return img
-
-
-def decode_compressed_depth_to_meters(msg: CompressedImage) -> np.ndarray:
-    """
-    Robust decoder for ROS2 compressedDepth.
-
-    Handles both:
-      A) Raw PNG bytes start immediately (data begins with PNG magic)
-      B) 12-byte header + PNG payload (common)
-
-    Returns: depth float32 in METERS, shape HxW
-    """
-    enc = _parse_compressed_depth_encoding(msg.format).upper()
-
-    data = msg.data
-    if not isinstance(data, (bytes, bytearray)):
-        data = bytes(data)
-
-    if len(data) < 8:
-        raise RuntimeError("compressedDepth too small")
-
-    # -------- Case A: raw PNG starts immediately --------
-    if data[:8] == PNG_MAGIC:
-        inv = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
-        if inv is None:
-            raise RuntimeError("Failed to decode depth PNG (raw)")
-        if inv.ndim == 3:
-            inv = inv[:, :, 0]
-
-        if enc.startswith("16UC1"):
-            # typically millimeters -> meters
-            return inv.astype(np.float32) * 0.001
-
-        if enc.startswith("32FC1"):
-            # sometimes already float meters
-            return inv.astype(np.float32)
-
-        # Fallback: treat like mm if uint16, else float32
-        if inv.dtype == np.uint16:
-            return inv.astype(np.float32) * 0.001
-        return inv.astype(np.float32)
-
-    # -------- Case B: 12-byte header + PNG --------
-    if len(data) < 12:
-        raise RuntimeError("compressedDepth too small for header")
-
-    # Common layout: <uint32, float32, float32> = 12 bytes
-    # (matches your working script)
-    _, depthQuantA, depthQuantB = struct.unpack("<iff", data[:12])
-    payload = data[12:]
-
-    # Sometimes payload may contain extra bytes before PNG. Find PNG magic.
-    png_pos = payload.find(PNG_MAGIC)
-    if png_pos < 0:
-        raise RuntimeError(f"compressedDepth payload is not PNG (format='{msg.format}')")
-
-    png_bytes = payload[png_pos:]
-    inv = cv2.imdecode(np.frombuffer(png_bytes, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
-    if inv is None:
-        raise RuntimeError("Failed to decode depth PNG (header+png)")
-    if inv.ndim == 3:
-        inv = inv[:, :, 0]
-
-    # If 32FC1 header+png, inv is usually uint16 "inverse depth"
-    # depth(m) = A / (inv - B)
-    if enc.startswith("32FC1"):
-        inv = inv.astype(np.float32)
-        depth = np.zeros_like(inv, dtype=np.float32)
-        mask = inv > 0
-        depth[mask] = float(depthQuantA) / (inv[mask] - float(depthQuantB))
-        return depth
-
-    if enc.startswith("16UC1"):
-        # usually mm in png
-        return inv.astype(np.float32) * 0.001
-
-    # fallback
-    if inv.dtype == np.uint16:
-        return inv.astype(np.float32) * 0.001
-    return inv.astype(np.float32)
-
-
-@dataclass
-class RGBDPacket:
-    stamp_sec: float
-    color_bgr8: np.ndarray   # HxWx3 uint8 BGR
-    depth_m: np.ndarray      # HxW float32 meters
-    K: np.ndarray            # 3x3 float64
-    frame_id: str
-    skew_sec: float
-
-
-class _ZedRGBDSubscriber(Node):
-    """
-    Subscribe to RGB + Depth + CameraInfo and synchronize them via message_filters.
-    This avoids the “no K yet” / stale K issues and matches your working approach.
-    """
     def __init__(
         self,
         rgb_topic: str,
         depth_topic: str,
-        cam_info_topic: str,
-        slop_sec: float,
-        queue_size: int,
+        camera_info_topic: str,
+        buffer_size: int = 300,
+        sync_slop_s: float = 0.03,
+        sync_queue: int = 10,
     ):
-        super().__init__("zed_rgbd_subscriber")
+        super().__init__("splatam_zed_ros2_dataset")
 
-        self._bridge = CvBridge()
-        self._lock = threading.Lock()
-        self._latest: Optional[RGBDPacket] = None
+        self.bridge = CvBridge()
 
-        # ZED topics show RELIABLE in your `ros2 topic info -v`
-        self._qos = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.VOLATILE,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=max(10, queue_size),
+        self.rgb_topic = rgb_topic
+        self.depth_topic = depth_topic
+        self.camera_info_topic = camera_info_topic
+
+        self.buffer = deque(maxlen=buffer_size)
+        self.lock = threading.Lock()
+
+        self._K: Optional[np.ndarray] = None  # 3x3 float64
+        self._img_w: Optional[int] = None
+        self._img_h: Optional[int] = None
+
+        # CameraInfo subscriber (intrinsics)
+        self.create_subscription(CameraInfo, self.camera_info_topic, self._caminfo_cb, 10)
+
+        # Synced RGB + Depth subscribers
+        self.rgb_sub = message_filters.Subscriber(self, Image, self.rgb_topic)
+        self.depth_sub = message_filters.Subscriber(self, Image, self.depth_topic)
+
+        self.ts = message_filters.ApproximateTimeSynchronizer(
+            [self.rgb_sub, self.depth_sub],
+            queue_size=sync_queue,
+            slop=sync_slop_s,
         )
-
-        rgb_msg_type = CompressedImage if rgb_topic.endswith("/compressed") else Image
-        depth_msg_type = CompressedImage if (depth_topic.endswith("/compressedDepth") or depth_topic.endswith("/compressed")) else Image
-
-        self.rgb_sub = Subscriber(self, rgb_msg_type, rgb_topic, qos_profile=self._qos)
-        self.depth_sub = Subscriber(self, depth_msg_type, depth_topic, qos_profile=self._qos)
-        self.caminfo_sub = Subscriber(self, CameraInfo, cam_info_topic, qos_profile=self._qos)
-
-        self.sync = ApproximateTimeSynchronizer(
-            [self.rgb_sub, self.depth_sub, self.caminfo_sub],
-            queue_size=queue_size,
-            slop=slop_sec,
-            allow_headerless=False,
-        )
-        self.sync.registerCallback(self._cb)
+        self.ts.registerCallback(self._rgbd_cb)
 
         self.get_logger().info(
-            "Subscribing:\n"
-            f"  RGB:  {rgb_topic}\n"
-            f"  Depth:{depth_topic}\n"
-            f"  Info: {cam_info_topic}\n"
-            f"  ATS: slop={slop_sec}s, queue={queue_size}"
+            f"ZED ROS2 Dataset subscribed to:\n"
+            f"  RGB:   {self.rgb_topic}\n"
+            f"  Depth: {self.depth_topic}\n"
+            f"  K:     {self.camera_info_topic}\n"
+            f"  Buffer size: {buffer_size}"
         )
 
-    def _decode_rgb(self, msg: Union[Image, CompressedImage]) -> np.ndarray:
-        if isinstance(msg, CompressedImage):
-            return decode_compressed_rgb_to_bgr(msg)
+    def _caminfo_cb(self, msg: CameraInfo):
+        # K is row-major 3x3 in msg.k
+        K = np.array(msg.k, dtype=np.float64).reshape(3, 3)
+        with self.lock:
+            self._K = K
+            self._img_w = msg.width
+            self._img_h = msg.height
 
-        rgb_cv = self._bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
-        enc = (msg.encoding or "").lower()
-
-        # ZED often publishes bgra8
-        if enc == "bgra8":
-            rgb_cv = cv2.cvtColor(rgb_cv, cv2.COLOR_BGRA2BGR)
-        elif enc == "rgba8":
-            rgb_cv = cv2.cvtColor(rgb_cv, cv2.COLOR_RGBA2BGR)
-        elif enc == "rgb8":
-            rgb_cv = cv2.cvtColor(rgb_cv, cv2.COLOR_RGB2BGR)
-        elif enc == "bgr8":
-            pass
-        else:
-            rgb_cv = self._bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
-
-        if rgb_cv is None or rgb_cv.ndim != 3 or rgb_cv.shape[2] != 3:
-            raise RuntimeError(f"RGB invalid after decode: {None if rgb_cv is None else rgb_cv.shape}")
-        return rgb_cv
-
-    def _decode_depth_m(self, msg: Union[Image, CompressedImage]) -> np.ndarray:
-        if isinstance(msg, CompressedImage):
-            depth_m = decode_compressed_depth_to_meters(msg)
-            if depth_m.ndim != 2:
-                raise RuntimeError(f"Depth invalid after compressed decode: {depth_m.shape}")
-            return depth_m.astype(np.float32, copy=False)
-
-        depth_cv = self._bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
-        enc = (msg.encoding or "").upper()
-
-        if enc == "16UC1":
-            depth_m = depth_cv.astype(np.float32, copy=False) * 0.001
-        elif enc == "32FC1":
-            depth_m = depth_cv.astype(np.float32, copy=False)
-        else:
-            # best effort
-            depth_m = depth_cv.astype(np.float32, copy=False)
-
-        if depth_m.ndim != 2:
-            raise RuntimeError(f"Depth invalid after raw decode: {depth_m.shape}")
-        return depth_m
-
-    def _cb(self, rgb_msg, depth_msg, caminfo_msg: CameraInfo):
+    def _rgbd_cb(self, rgb_msg: Image, depth_msg: Image):
+        # Convert RGB
+        # Your ZED is bgra8. We convert to RGB (uint8 HxWx3).
         try:
-            t_rgb = _stamp_to_sec(rgb_msg.header.stamp)
-            t_d = _stamp_to_sec(depth_msg.header.stamp)
-            skew = abs(t_rgb - t_d)
-
-            rgb_bgr = self._decode_rgb(rgb_msg)
-            depth_m = self._decode_depth_m(depth_msg)
-
-            K = np.array(caminfo_msg.k, dtype=np.float64).reshape(3, 3)
-            frame_id = caminfo_msg.header.frame_id or rgb_msg.header.frame_id
-
+            if rgb_msg.encoding.lower() == "bgra8":
+                bgra = self.bridge.imgmsg_to_cv2(rgb_msg, desired_encoding="bgra8")
+                bgr = cv2.cvtColor(bgra, cv2.COLOR_BGRA2BGR)
+                rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+            elif rgb_msg.encoding.lower() == "bgr8":
+                bgr = self.bridge.imgmsg_to_cv2(rgb_msg, desired_encoding="bgr8")
+                rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+            elif rgb_msg.encoding.lower() == "rgb8":
+                rgb = self.bridge.imgmsg_to_cv2(rgb_msg, desired_encoding="rgb8")
+            else:
+                # Fallback: try to convert as is, then handle channels
+                cv_img = self.bridge.imgmsg_to_cv2(rgb_msg)
+                if cv_img.ndim == 3 and cv_img.shape[2] == 4:
+                    # assume BGRA
+                    bgr = cv2.cvtColor(cv_img, cv2.COLOR_BGRA2BGR)
+                    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+                elif cv_img.ndim == 3 and cv_img.shape[2] == 3:
+                    # assume BGR
+                    rgb = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
+                else:
+                    raise ValueError(f"Unexpected RGB shape {cv_img.shape} encoding={rgb_msg.encoding}")
         except Exception as e:
-            self.get_logger().error(f"RGBD callback decode failed: {e}")
+            self.get_logger().warn(f"Failed converting RGB image: {e}")
             return
 
-        with self._lock:
-            self._latest = RGBDPacket(
-                stamp_sec=t_rgb,
-                color_bgr8=rgb_bgr,
-                depth_m=depth_m,
-                K=K,
-                frame_id=frame_id,
-                skew_sec=skew,
-            )
+        # Convert Depth
+        # Your depth is 32FC1. We decode float32 HxW.
+        try:
+            if depth_msg.encoding.upper() == "32FC1":
+                depth = self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding="32FC1")
+                depth = depth.astype(np.float32)
+            elif depth_msg.encoding.upper() in ("16UC1", "MONO16"):
+                # if someone switches ZED settings, handle mm depth
+                depth_u16 = self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding="16UC1")
+                depth = depth_u16.astype(np.float32)
+            else:
+                depth = self.bridge.imgmsg_to_cv2(depth_msg)
+                depth = np.asarray(depth).astype(np.float32)
+        except Exception as e:
+            self.get_logger().warn(f"Failed converting depth image: {e}")
+            return
 
-    def pop_latest(self) -> Optional[RGBDPacket]:
-        with self._lock:
-            return self._latest
+        # Replace invalid values (ZED often uses NaN for invalid)
+        depth = np.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0)
+
+        # Store
+        stamp = rgb_msg.header.stamp.sec + rgb_msg.header.stamp.nanosec * 1e-9
+        with self.lock:
+            self.buffer.append((stamp, rgb, depth))
 
 
-class ZedRos2Dataset(torch.utils.data.Dataset):
+class ZEDROS2Dataset(torch.utils.data.Dataset):
     """
-    Live ROS2 dataset adapter for SplaTAM.
+    Streaming dataset wrapper for ZED2i via ROS2 topics.
+    Returns (color, depth, intrinsics_4x4, pose_4x4).
 
-    Returns tuples:
-      (color(H,W,3), depth(H,W,1), intrinsics(4,4), pose(4,4))
-
-    - color: float32 0..255 (SplaTAM divides by 255 later)
-    - depth: float32 meters
-    - pose: identity
+    color: torch.uint8-like float tensor later divided by 255 in splatam.py (we keep uint8 -> float)
+           shape (H, W, 3)
+    depth: float32 meters-ish, shape (H, W, 1)
+    intrinsics: 4x4 with K scaled for desired resolution
+    pose: 4x4 identity (no GT poses live)
     """
+
     def __init__(
         self,
         config_dict,
-        basedir: str,
-        sequence: str,
-        desired_height: int = 720,
-        desired_width: int = 960,
-        device: str = "cuda:0",
+        basedir=None,
+        sequence=None,
+        stride: Optional[int] = 1,
+        start: Optional[int] = 0,
+        end: Optional[int] = -1,
+        desired_height: int = 360,
+        desired_width: int = 640,
+        device="cuda:0",
         dtype=torch.float,
-        num_frames: int = 10_000_000,
-        rgb_topic: str = "/zed/zed_node/rgb/color/rect/image",
-        depth_topic: str = "/zed/zed_node/depth/depth_registered",
-        cam_info_topic: str = "/zed/zed_node/rgb/color/rect/camera_info",
-        slop_sec: float = 0.1,
-        queue_size: int = 30,
-        wait_timeout_sec: float = 5.0,
-        debug_log_every_n: int = 50,
         **kwargs,
     ):
         super().__init__()
-        self.name = config_dict.get("dataset_name", "zed2i_ros2")
+        self.name = config_dict["dataset_name"]
         self.device = device
         self.dtype = dtype
+
+        cam = config_dict["camera_params"]
+        self.orig_height = int(cam["image_height"])
+        self.orig_width = int(cam["image_width"])
+
+        # IMPORTANT: for 32FC1 depth in meters, use 1.0
+        self.png_depth_scale = float(cam.get("png_depth_scale", 1.0))
+
+        # Intrinsics from config (we can update from CameraInfo at runtime too)
+        self.fx = float(cam["fx"])
+        self.fy = float(cam["fy"])
+        self.cx = float(cam["cx"])
+        self.cy = float(cam["cy"])
+
         self.desired_height = int(desired_height)
         self.desired_width = int(desired_width)
-        self.num_frames = int(num_frames)
+        self.height_downsample_ratio = float(self.desired_height) / float(self.orig_height)
+        self.width_downsample_ratio = float(self.desired_width) / float(self.orig_width)
 
-        self._wait_timeout_sec = float(wait_timeout_sec)
-        self._debug_log_every_n = int(debug_log_every_n) if debug_log_every_n else 0
-        self._get_count = 0
+        # ROS topics from config
+        zed_cfg = config_dict.get("zed_ros2", {})
+        self.rgb_topic = zed_cfg.get("rgb_topic", "/zed/zed_node/rgb/color/rect/image")
+        self.depth_topic = zed_cfg.get("depth_topic", "/zed/zed_node/depth/depth_registered")
+        self.camera_info_topic = zed_cfg.get("camera_info_topic", "/zed/zed_node/rgb/color/rect/camera_info")
+        self.buffer_size = int(zed_cfg.get("buffer_size", 300))
+        self.sync_slop_s = float(zed_cfg.get("sync_slop_s", 0.03))
+        self.sync_queue = int(zed_cfg.get("sync_queue", 10))
 
-        self._rgb_topic = rgb_topic[0] if isinstance(rgb_topic, (list, tuple)) else rgb_topic
-        self._depth_topic = depth_topic[0] if isinstance(depth_topic, (list, tuple)) else depth_topic
-        self._cam_info_topic = cam_info_topic[0] if isinstance(cam_info_topic, (list, tuple)) else cam_info_topic
+        # For splatam loop
+        self.start = int(start or 0)
+        self.end = int(end) if end is not None else -1
+        self.stride = int(stride or 1)
 
-        self._slop_sec = float(slop_sec)
-        self._queue_size = int(queue_size)
+        # Pose is identity for all frames (no GT)
+        self._identity_pose = torch.eye(4, dtype=torch.float32)
 
+        # ROS spin thread
         self._ros_thread = None
-        self._ros_node: Optional[_ZedRGBDSubscriber] = None
-        self._executor = None
+        self._ros_running = False
+        self._node: Optional[_ZedROS2Node] = None
 
         self._start_ros()
 
+        # Wait a moment to start receiving data
+        t0 = time.time()
+        while time.time() - t0 < 30.0:
+            if self._node is not None and len(self._node.buffer) > 0 and self._node._K is not None:
+                break
+            time.sleep(0.05)
+
     def _start_ros(self):
+        # Initialize ROS once per process
         if not rclpy.ok():
             rclpy.init(args=None)
 
-        self._ros_node = _ZedRGBDSubscriber(
-            rgb_topic=self._rgb_topic,
-            depth_topic=self._depth_topic,
-            cam_info_topic=self._cam_info_topic,
-            slop_sec=self._slop_sec,
-            queue_size=self._queue_size,
+        self._node = _ZedROS2Node(
+            rgb_topic=self.rgb_topic,
+            depth_topic=self.depth_topic,
+            camera_info_topic=self.camera_info_topic,
+            buffer_size=self.buffer_size,
+            sync_slop_s=self.sync_slop_s,
+            sync_queue=self.sync_queue,
         )
-
-        self._executor = rclpy.executors.SingleThreadedExecutor()
-        self._executor.add_node(self._ros_node)
+        self._ros_running = True
 
         def _spin():
-            try:
-                self._executor.spin()
-            except Exception as e:
-                print(f"[ZedRos2Dataset] ROS2 spin thread error: {e}")
+            while self._ros_running and rclpy.ok():
+                rclpy.spin_once(self._node, timeout_sec=0.05)
 
         self._ros_thread = threading.Thread(target=_spin, daemon=True)
         self._ros_thread.start()
 
+    def shutdown(self):
+        self._ros_running = False
+        if self._ros_thread is not None:
+            self._ros_thread.join(timeout=1.0)
+        if self._node is not None:
+            self._node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+    def __del__(self):
+        try:
+            self.shutdown()
+        except Exception:
+            pass
+
     def __len__(self):
-        return self.num_frames
+        """
+        Finite length so splatam's range(num_frames) works.
+        If end == -1, we report current buffered size (at least 1 once warmed up).
+        Otherwise, we report (end-start)/stride.
+        """
+        if self.end != -1:
+            n = max(0, (self.end - self.start + (self.stride - 1)) // self.stride)
+            return n
+        # live mode
+        if self._node is None:
+            return 0
+        with self._node.lock:
+            return max(1, len(self._node.buffer))
 
-    def _wait_for_packet(self) -> RGBDPacket:
-        start = time.time()
-        while True:
-            pkt = self._ros_node.pop_latest() if self._ros_node is not None else None
-            if pkt is not None:
-                self._get_count += 1
-                if self._debug_log_every_n and (self._get_count % self._debug_log_every_n == 0):
-                    # quick sanity depth stats
-                    d = pkt.depth_m
-                    valid = d > 0
-                    if np.any(valid):
-                        dv = d[valid]
-                        self._ros_node.get_logger().info(
-                            f"RGBD: skew={pkt.skew_sec:.4f}s rgb={pkt.color_bgr8.shape} "
-                            f"depth={pkt.depth_m.shape} depth(m) min/med/max="
-                            f"{float(dv.min()):.3f}/{float(np.median(dv)):.3f}/{float(dv.max()):.3f}"
-                        )
-                    else:
-                        self._ros_node.get_logger().info(
-                            f"RGBD: skew={pkt.skew_sec:.4f}s rgb={pkt.color_bgr8.shape} depth all zeros"
-                        )
-                return pkt
+    def _get_latest_buffered(self, index: int) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray], int, int]:
+        """
+        Returns rgb(H,W,3), depth(H,W), K(3,3) if available, img_w, img_h
+        """
+        if self._node is None:
+            raise RuntimeError("ROS2 node not initialized")
 
-            if time.time() - start > self._wait_timeout_sec:
-                raise TimeoutError(
-                    "Timed out waiting for synchronized RGB+Depth+CameraInfo.\n"
-                    f"  RGB:  {self._rgb_topic}\n"
-                    f"  Depth:{self._depth_topic}\n"
-                    f"  Info: {self._cam_info_topic}\n"
-                    "If using compressed topics, ensure /compressed and /compressedDepth are actually publishing."
-                )
+        with self._node.lock:
+            if len(self._node.buffer) == 0:
+                raise RuntimeError("No frames received yet from ROS2 topics")
 
-            time.sleep(0.001)
+            # Use an index into the ring buffer; if index exceeds current size, clamp to last
+            idx = min(index, len(self._node.buffer) - 1)
+            _, rgb, depth = self._node.buffer[idx]
 
-    def __getitem__(self, index):
-        pkt = self._wait_for_packet()
+            # Prefer runtime CameraInfo K if available
+            K = self._node._K.copy() if self._node._K is not None else None
+            iw = self._node._img_w if self._node._img_w is not None else self.orig_width
+            ih = self._node._img_h if self._node._img_h is not None else self.orig_height
 
-        rgb_f = pkt.color_bgr8.astype(np.float32)  # 0..255
-        depth_m = pkt.depth_m.astype(np.float32)   # meters
+        return rgb, depth, K, int(iw), int(ih)
 
-        # Resize both consistently (if needed)
-        h0, w0 = rgb_f.shape[:2]
-        if (h0 != self.desired_height) or (w0 != self.desired_width):
-            rgb_f = cv2.resize(rgb_f, (self.desired_width, self.desired_height), interpolation=cv2.INTER_LINEAR)
-            depth_m = cv2.resize(depth_m, (self.desired_width, self.desired_height), interpolation=cv2.INTER_NEAREST)
+    def __getitem__(self, index: int):
+        # Map requested dataset index to ring buffer position
+        # If you want "always latest frame", set idx = -1.
+        # Here we map increasing index -> increasing buffer entries.
+        rgb_np, depth_np, K_runtime, iw, ih = self._get_latest_buffered(index)
 
-            h_scale = float(self.desired_height) / float(h0)
-            w_scale = float(self.desired_width) / float(w0)
-            K_scaled = _scale_intrinsics(pkt.K, h_scale=h_scale, w_scale=w_scale)
+        # Update orig sizes if CameraInfo differs
+        self.orig_width = iw
+        self.orig_height = ih
+        self.height_downsample_ratio = float(self.desired_height) / float(self.orig_height)
+        self.width_downsample_ratio = float(self.desired_width) / float(self.orig_width)
+
+        # If runtime K exists, use it; else use config fx/fy/cx/cy
+        if K_runtime is not None:
+            K3 = K_runtime.astype(np.float32)
+            fx = float(K3[0, 0]); fy = float(K3[1, 1]); cx = float(K3[0, 2]); cy = float(K3[1, 2])
         else:
-            K_scaled = pkt.K
+            fx, fy, cx, cy = self.fx, self.fy, self.cx, self.cy
+            K3 = np.array([[fx, 0.0, cx],
+                           [0.0, fy, cy],
+                           [0.0, 0.0, 1.0]], dtype=np.float32)
 
-        depth_m = np.expand_dims(depth_m, axis=-1)  # HxWx1
+        # Resize color
+        rgb_resized = cv2.resize(rgb_np, (self.desired_width, self.desired_height), interpolation=cv2.INTER_LINEAR)
 
-        intrinsics = np.eye(4, dtype=np.float32)
-        intrinsics[:3, :3] = K_scaled.astype(np.float32)
+        # Resize depth (nearest), scale, add channel dim
+        depth_resized = cv2.resize(depth_np.astype(np.float32), (self.desired_width, self.desired_height), interpolation=cv2.INTER_NEAREST)
+        depth_resized = np.nan_to_num(depth_resized, nan=0.0, posinf=0.0, neginf=0.0)
+        depth_resized = (depth_resized / float(self.png_depth_scale)).astype(np.float32)
+        depth_resized = np.expand_dims(depth_resized, axis=-1)  # (H,W,1)
 
-        pose = np.eye(4, dtype=np.float32)  # live mode: identity
+        # Scale intrinsics for resized image
+        K3_scaled = K3.copy()
+        K3_scaled[0, 0] *= self.width_downsample_ratio
+        K3_scaled[1, 1] *= self.height_downsample_ratio
+        K3_scaled[0, 2] *= self.width_downsample_ratio
+        K3_scaled[1, 2] *= self.height_downsample_ratio
 
-        color_t = torch.from_numpy(rgb_f).to(self.device).type(self.dtype)
-        depth_t = torch.from_numpy(depth_m).to(self.device).type(self.dtype)
-        intr_t = torch.from_numpy(intrinsics).to(self.device).type(self.dtype)
-        pose_t = torch.from_numpy(pose).to(self.device).type(self.dtype)
+        intrinsics_4x4 = _as_intrinsics_4x4(K3_scaled)
+
+        # Convert to torch
+        color_t = torch.from_numpy(rgb_resized.astype(np.float32)).to(self.device).type(self.dtype)
+        depth_t = torch.from_numpy(depth_resized).to(self.device).type(self.dtype)
+        intr_t = intrinsics_4x4.to(self.device).type(self.dtype)
+        pose_t = self._identity_pose.to(self.device).type(self.dtype)
 
         return color_t, depth_t, intr_t, pose_t
