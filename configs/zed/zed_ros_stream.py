@@ -3,15 +3,15 @@
 primary_device = "cuda:0"
 seed = 0
 
-base_dir = "./zedTest/zed_Captures"
+base_dir = "../experiments/ZED2i_Live/zedTest"
 scene_name = "zed_stream"
-num_frames = 300  # total frames to process
+num_frames = 200  # total frames to process
 
 overwrite = True
 
 config = dict(
     workdir=f"{base_dir}/{scene_name}",
-    run_name="SplaTAM_zed_ros",
+    run_name="SplaTAM_ZED2i_Live",
     overwrite=overwrite,
     seed=seed,
     primary_device=primary_device,
@@ -29,7 +29,7 @@ config = dict(
 
     report_iter_progress=False,
     load_checkpoint=False,
-    save_checkpoints=False,
+    save_checkpoints=True,
     checkpoint_interval=5,
     use_wandb=False,
 
@@ -119,7 +119,7 @@ config = dict(
     ),
 
     live_view=dict(
-        enabled=True,
+        enabled=False,
         during_tracking=False,
         tracking_render_every=10,
         show_depth=False,
