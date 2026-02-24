@@ -16,7 +16,6 @@ print("System Paths:")
 for p in sys.path:
     print(p)
 
-from datasets.zed_ros_dataset import ZedRosDataset
 
 import cv2
 import matplotlib.pyplot as plt
@@ -43,28 +42,9 @@ from utils.slam_external import calc_ssim, build_rotation, prune_gaussians, dens
 from diff_gaussian_rasterization import GaussianRasterizer as Renderer
 
 def get_dataset(config_dict, basedir, sequence, **kwargs):
-    if config_dict["dataset_name"].lower() in ["icl"]:
-        return ICLDataset(config_dict, basedir, sequence, **kwargs)
-    elif config_dict["dataset_name"].lower() in ["replica"]:
-        return ReplicaDataset(config_dict, basedir, sequence, **kwargs)
-    elif config_dict["dataset_name"].lower() in ["replicav2"]:
-        return ReplicaV2Dataset(config_dict, basedir, sequence, **kwargs)
-    elif config_dict["dataset_name"].lower() in ["azure", "azurekinect"]:
-        return AzureKinectDataset(config_dict, basedir, sequence, **kwargs)
-    elif config_dict["dataset_name"].lower() in ["scannet"]:
-        return ScannetDataset(config_dict, basedir, sequence, **kwargs)
-    elif config_dict["dataset_name"].lower() in ["ai2thor"]:
-        return Ai2thorDataset(config_dict, basedir, sequence, **kwargs)
-    elif config_dict["dataset_name"].lower() in ["record3d"]:
-        return Record3DDataset(config_dict, basedir, sequence, **kwargs)
-    elif config_dict["dataset_name"].lower() in ["realsense"]:
+
+    if config_dict["dataset_name"].lower() in ["realsense"]:
         return RealsenseDataset(config_dict, basedir, sequence, **kwargs)
-    elif config_dict["dataset_name"].lower() in ["tum"]:
-        return TUMDataset(config_dict, basedir, sequence, **kwargs)
-    elif config_dict["dataset_name"].lower() in ["scannetpp"]:
-        return ScannetPPDataset(basedir, sequence, **kwargs)
-    elif config_dict["dataset_name"].lower() in ["nerfcapture"]:
-        return NeRFCaptureDataset(basedir, sequence, **kwargs)
     elif config_dict["dataset_name"].lower() in ["zed_ros", "zed"]:
         return ZedRosDataset(
             desired_height=kwargs["desired_height"],
