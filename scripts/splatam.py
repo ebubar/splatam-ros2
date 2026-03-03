@@ -23,7 +23,7 @@ import wandb
 
 from datasets.gradslam_datasets import (load_dataset_config, ICLDataset, ReplicaDataset, ReplicaV2Dataset, AzureKinectDataset,
                                         ScannetDataset, Ai2thorDataset, Record3DDataset, RealsenseDataset, TUMDataset,
-                                        ScannetPPDataset, NeRFCaptureDataset)
+                                        ScannetPPDataset, NeRFCaptureDataset, Zed2iDataset)
 from utils.common_utils import seed_everything, save_params_ckpt, save_params
 from utils.eval_helpers import report_loss, report_progress, eval
 from utils.keyframe_selection import keyframe_selection_overlap
@@ -38,30 +38,31 @@ from diff_gaussian_rasterization import GaussianRasterizer as Renderer
 
 
 def get_dataset(config_dict, basedir, sequence, **kwargs):
-    if config_dict["dataset_name"].lower() in ["icl"]:
-        return ICLDataset(config_dict, basedir, sequence, **kwargs)
-    elif config_dict["dataset_name"].lower() in ["replica"]:
-        return ReplicaDataset(config_dict, basedir, sequence, **kwargs)
-    elif config_dict["dataset_name"].lower() in ["replicav2"]:
-        return ReplicaV2Dataset(config_dict, basedir, sequence, **kwargs)
-    elif config_dict["dataset_name"].lower() in ["azure", "azurekinect"]:
-        return AzureKinectDataset(config_dict, basedir, sequence, **kwargs)
-    elif config_dict["dataset_name"].lower() in ["scannet"]:
-        return ScannetDataset(config_dict, basedir, sequence, **kwargs)
-    elif config_dict["dataset_name"].lower() in ["ai2thor"]:
-        return Ai2thorDataset(config_dict, basedir, sequence, **kwargs)
-    elif config_dict["dataset_name"].lower() in ["record3d"]:
-        return Record3DDataset(config_dict, basedir, sequence, **kwargs)
-    elif config_dict["dataset_name"].lower() in ["realsense"]:
-        return RealsenseDataset(config_dict, basedir, sequence, **kwargs)
-    elif config_dict["dataset_name"].lower() in ["tum"]:
-        return TUMDataset(config_dict, basedir, sequence, **kwargs)
-    elif config_dict["dataset_name"].lower() in ["scannetpp"]:
-        return ScannetPPDataset(basedir, sequence, **kwargs)
-    elif config_dict["dataset_name"].lower() in ["nerfcapture"]:
-        return NeRFCaptureDataset(basedir, sequence, **kwargs)
-    elif config_dict["dataset_name"].lower() in ["zed2i"]:
-        return NeRFCaptureDataset(basedir, sequence, **kwargs)
+    # if config_dict["dataset_name"].lower() in ["icl"]:
+    #     return ICLDataset(config_dict, basedir, sequence, **kwargs)
+    # elif config_dict["dataset_name"].lower() in ["replica"]:
+    #     return ReplicaDataset(config_dict, basedir, sequence, **kwargs)
+    # elif config_dict["dataset_name"].lower() in ["replicav2"]:
+    #     return ReplicaV2Dataset(config_dict, basedir, sequence, **kwargs)
+    # elif config_dict["dataset_name"].lower() in ["azure", "azurekinect"]:
+    #     return AzureKinectDataset(config_dict, basedir, sequence, **kwargs)
+    # elif config_dict["dataset_name"].lower() in ["scannet"]:
+    #     return ScannetDataset(config_dict, basedir, sequence, **kwargs)
+    # elif config_dict["dataset_name"].lower() in ["ai2thor"]:
+    #     return Ai2thorDataset(config_dict, basedir, sequence, **kwargs)
+    # elif config_dict["dataset_name"].lower() in ["record3d"]:
+    #     return Record3DDataset(config_dict, basedir, sequence, **kwargs)
+    # elif config_dict["dataset_name"].lower() in ["realsense"]:
+    #     return RealsenseDataset(config_dict, basedir, sequence, **kwargs)
+    # elif config_dict["dataset_name"].lower() in ["tum"]:
+    #     return TUMDataset(config_dict, basedir, sequence, **kwargs)
+    # elif config_dict["dataset_name"].lower() in ["scannetpp"]:
+    #     return ScannetPPDataset(basedir, sequence, **kwargs)
+    # elif config_dict["dataset_name"].lower() in ["nerfcapture"]:
+    #     return NeRFCaptureDataset(basedir, sequence, **kwargs)
+    if config_dict["dataset_name"].lower() in ["zed2i", "zed", "zed2i_ros"]:
+        #return Zed2iDataset(config_dict, basedir, sequence, **kwargs)
+        return Zed2iDataset(config_dict, basedir, sequence, **kwargs)
     else:
         raise ValueError(f"Unknown dataset name {config_dict['dataset_name']}")
 

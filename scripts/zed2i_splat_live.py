@@ -41,6 +41,12 @@ from utils.keyframe_selection import keyframe_selection_overlap
 from utils.slam_external import build_rotation, prune_gaussians, densify
 from utils.live_renderer import LiveRenderer, LiveRendererConfig
 
+from diff_gaussian_rasterization import GaussianRasterizer as Renderer
+from utils.slam_helpers import (
+    transform_to_frame,
+    transformed_params2rendervar,
+)
+
 # Reuse SplaTAM internals (same as iphone_demo.py)
 from scripts.splatam import (
     get_loss,
@@ -217,7 +223,7 @@ class ZedSplatamOnline(Node):
         self.live = LiveRenderer(
             LiveRendererConfig(
                 live_cam=bool(self.cfg.get("live_cam", False)),
-                live_depth=bool(self.cfg.get("live_depth", False)),   # ✅ ADD THIS
+                live_depth=bool(self.cfg.get("live_depth", False)),
                 live_splat=bool(self.cfg.get("live_splat", False)),
                 max_fps=float(self.cfg.get("live_max_fps", 30.0)),
             )
@@ -245,6 +251,31 @@ class ZedSplatamOnline(Node):
         self.gt_w2c_all_frames = []
 
         self.get_logger().info("Ready. Waiting for synced frames...")
+
+
+    def _render_splat_preview(self, w2c: torch.Tensor, time_idx: int) -> np.ndarray:
+        if self.intrinsics is None or self.params is None:
+            return None
+
+        W = int(self.cfg["data"]["desired_image_width"])
+        H = int(self.cfg["data"]["desired_image_height"])
+        K = self.intrinsics.detach().cpu().numpy()  # 3x3
+
+        # camera with the CURRENT pose
+        cam = setup_camera(W, H, K, w2c.detach().cpu().numpy())
+
+        with torch.no_grad():
+            transformed_gaussians = transform_to_frame(
+                self.params,
+                time_idx,
+                gaussians_grad=False,
+                camera_grad=False,
+            )
+
+            rendervar = transformed_params2rendervar(self.params, transformed_gaussians)
+            im, _, _, = Renderer(raster_settings=cam)(**rendervar)  # (3,H,W) RGB float [0,1]
+
+        return torch_rgb_chw_to_bgr8(im)
 
     def synced_cb(self, rgb_msg: Image, depth_msg: Image, rgb_info: CameraInfo, depth_info: CameraInfo):
         if self.total_frames >= self.num_frames:
@@ -304,14 +335,17 @@ class ZedSplatamOnline(Node):
             else:
                 cam_bgr = rgb_rs  # assume already BGR
 
-        # depth_rs is (H, W) float meters
-        self.live.update_camera(cam_bgr)        
-        self.live.update_depth(depth_rs)          
-        # Call tick ONCE per frame
-        if not self.live.tick():
-            self.get_logger().info("LiveRenderer requested quit.")
-            self._done = True
-            return
+        if "curr_w2c" not in locals() or curr_w2c is None:
+            curr_w2c = self.last_valid_w2c
+
+        # --- Live previews (only if enabled) ---
+        if self.cfg.get("live_cam", False):
+            self.live.update_cam(cam_bgr)
+
+        if self.cfg.get("live_depth", False):
+            self.live.update_depth(depth_rs)
+
+
         depth_rs = np.expand_dims(depth_rs, -1)
 
         # --- Torch tensors ---
@@ -582,13 +616,26 @@ class ZedSplatamOnline(Node):
                 self.keyframe_list.append(curr_keyframe)
                 self.keyframe_time_indices.append(time_idx)
 
+        # ---- Live splat preview (REAL render) ----
+        if self.cfg.get("live_splat", False) and (self.params is not None):
+            if "curr_w2c" not in locals() or curr_w2c is None:
+                curr_w2c = self.last_valid_w2c
+
+            preview_bgr = self._render_splat_preview(curr_w2c, time_idx)
+            if preview_bgr is not None:
+                self.live.update_splat_preview(preview_bgr)
+
         self.total_frames += 1
 
         self.get_logger().info(
             f"Frame {self.total_frames}/{self.num_frames} | rgb_enc={rgb_encoding} depth_enc={depth_encoding} | track_dt={tracking_dt:.3f}s"
         )
 
-        
+        # ---- Tick ONCE per frame (LAST thing) ----
+        if not self.live.tick():
+            self.get_logger().info("LiveRenderer requested quit.")
+            self._done = True
+            return
         if self.total_frames == self.num_frames:
             # # Save like other pipelines
             # # Add camera + bookkeeping like splatam.py does
