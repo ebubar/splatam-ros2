@@ -39,6 +39,13 @@ from utils.common_utils import seed_everything, save_params
 from utils.recon_helpers import setup_camera
 from utils.keyframe_selection import keyframe_selection_overlap
 from utils.slam_external import build_rotation, prune_gaussians, densify
+from utils.live_renderer import LiveRenderer, LiveRendererConfig
+
+from diff_gaussian_rasterization import GaussianRasterizer as Renderer
+from utils.slam_helpers import (
+    transform_to_frame,
+    transformed_params2rendervar,
+)
 
 # Reuse SplaTAM internals (same as iphone_demo.py)
 from scripts.splatam import (
@@ -54,6 +61,16 @@ from scripts.splatam import (
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--config", default="./configs/zed/online_demo.py", type=str)
+
+    # ---- Live Rendering Flags ----
+    p.add_argument("--live_cam", action="store_true",
+                   help="Enable live camera rendering")
+    p.add_argument("--live_splat", action="store_true",
+                   help="Enable live splat rendering")
+    p.add_argument("--live_max_fps", type=float, default=None,
+                   help="Max FPS for live renderer")
+    p.add_argument("--live_depth", action="store_true",
+                help="Enable live depth rendering (separate window)")
     return p.parse_args()
 
 
@@ -136,6 +153,15 @@ def w2c_from_params(params, time_idx, device, eps=1e-6):
     w2c[:3, 3] = t
     return w2c
 
+def torch_rgb_chw_to_bgr8(img_chw: torch.Tensor) -> np.ndarray:
+    """
+    img_chw: torch float tensor in [0,1], shape (3,H,W), RGB
+    returns: uint8 BGR image (H,W,3)
+    """
+    img = img_chw.detach().clamp(0, 1).permute(1, 2, 0).cpu().numpy()  # HWC RGB float
+    img = (img * 255.0).astype(np.uint8)
+    return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+
 class ZedSplatamOnline(Node):
     def __init__(self, config: dict):
         super().__init__("zed_splatam_online")
@@ -194,6 +220,19 @@ class ZedSplatamOnline(Node):
         self.total_frames = 0
         self.num_frames = int(self.cfg["num_frames"])
         self.device = torch.device(self.cfg.get("primary_device", "cuda:0"))
+        self.live = LiveRenderer(
+            LiveRendererConfig(
+                live_cam=bool(self.cfg.get("live_cam", False)),
+                live_depth=bool(self.cfg.get("live_depth", False)),
+                live_splat=bool(self.cfg.get("live_splat", False)),
+                max_fps=float(self.cfg.get("live_max_fps", 30.0)),
+            )
+        )
+        self.get_logger().info(
+        f"LiveRenderer: live_cam={self.cfg.get('live_cam')} "
+        f"live_depth={self.cfg.get('live_depth')} "
+        f"live_splat={self.cfg.get('live_splat')}"
+         )   
         self.last_valid_w2c = torch.eye(4, device=self.device).float()
         self.last_valid_time_idx = 0
         self.params = None
@@ -212,6 +251,31 @@ class ZedSplatamOnline(Node):
         self.gt_w2c_all_frames = []
 
         self.get_logger().info("Ready. Waiting for synced frames...")
+
+
+    def _render_splat_preview(self, w2c: torch.Tensor, time_idx: int) -> np.ndarray:
+        if self.intrinsics is None or self.params is None:
+            return None
+
+        W = int(self.cfg["data"]["desired_image_width"])
+        H = int(self.cfg["data"]["desired_image_height"])
+        K = self.intrinsics.detach().cpu().numpy()  # 3x3
+
+        # camera with the CURRENT pose
+        cam = setup_camera(W, H, K, w2c.detach().cpu().numpy())
+
+        with torch.no_grad():
+            transformed_gaussians = transform_to_frame(
+                self.params,
+                time_idx,
+                gaussians_grad=False,
+                camera_grad=False,
+            )
+
+            rendervar = transformed_params2rendervar(self.params, transformed_gaussians)
+            im, _, _, = Renderer(raster_settings=cam)(**rendervar)  # (3,H,W) RGB float [0,1]
+
+        return torch_rgb_chw_to_bgr8(im)
 
     def synced_cb(self, rgb_msg: Image, depth_msg: Image, rgb_info: CameraInfo, depth_info: CameraInfo):
         if self.total_frames >= self.num_frames:
@@ -256,6 +320,31 @@ class ZedSplatamOnline(Node):
         if rgb_rs.shape[2] not in (3, 4):
             self.get_logger().warn(f"Unexpected RGB channels: {rgb_rs.shape}")
             return
+
+        # ---- Live camera preview (OpenCV wants BGR 8-bit) ----
+        if rgb_rs.shape[2] == 4:
+            # Most likely ZED: bgra8
+            if "bgra" in rgb_encoding:
+                cam_bgr = cv2.cvtColor(rgb_rs, cv2.COLOR_BGRA2BGR)
+            else:
+                cam_bgr = cv2.cvtColor(rgb_rs, cv2.COLOR_RGBA2BGR)
+        else:
+            # 3 channel
+            if "rgb" in rgb_encoding:
+                cam_bgr = cv2.cvtColor(rgb_rs, cv2.COLOR_RGB2BGR)
+            else:
+                cam_bgr = rgb_rs  # assume already BGR
+
+        if "curr_w2c" not in locals() or curr_w2c is None:
+            curr_w2c = self.last_valid_w2c
+
+        # --- Live previews (only if enabled) ---
+        if self.cfg.get("live_cam", False):
+            self.live.update_cam(cam_bgr)
+
+        if self.cfg.get("live_depth", False):
+            self.live.update_depth(depth_rs)
+
 
         depth_rs = np.expand_dims(depth_rs, -1)
 
@@ -319,6 +408,7 @@ class ZedSplatamOnline(Node):
                 if "bgr" in rgb_encoding:
                     densify_rgb = cv2.cvtColor(densify_rgb, cv2.COLOR_BGR2RGB)
 
+            # Live preview (camera). rgb_rs is RGB uint8, depth_m is float meters (original res)
             densify_color = torch.from_numpy(densify_rgb).to(self.device).float().permute(2, 0, 1) / 255.0
 
             densify_depth = torch.from_numpy(densify_depth).to(self.device).float().permute(2, 0, 1)
@@ -443,7 +533,7 @@ class ZedSplatamOnline(Node):
                     )
                 
             #
-            # ✅ Keyframe selection MUST happen regardless of densify
+            # Keyframe selection MUST happen regardless of densify
             with torch.no_grad():
                 num_keyframes = int(self.cfg["mapping_window_size"]) - 2
                 selected_keyframes = keyframe_selection_overlap(
@@ -526,12 +616,26 @@ class ZedSplatamOnline(Node):
                 self.keyframe_list.append(curr_keyframe)
                 self.keyframe_time_indices.append(time_idx)
 
+        # ---- Live splat preview (REAL render) ----
+        if self.cfg.get("live_splat", False) and (self.params is not None):
+            if "curr_w2c" not in locals() or curr_w2c is None:
+                curr_w2c = self.last_valid_w2c
+
+            preview_bgr = self._render_splat_preview(curr_w2c, time_idx)
+            if preview_bgr is not None:
+                self.live.update_splat_preview(preview_bgr)
+
         self.total_frames += 1
 
         self.get_logger().info(
             f"Frame {self.total_frames}/{self.num_frames} | rgb_enc={rgb_encoding} depth_enc={depth_encoding} | track_dt={tracking_dt:.3f}s"
         )
 
+        # ---- Tick ONCE per frame (LAST thing) ----
+        if not self.live.tick():
+            self.get_logger().info("LiveRenderer requested quit.")
+            self._done = True
+            return
         if self.total_frames == self.num_frames:
             # # Save like other pipelines
             # # Add camera + bookkeeping like splatam.py does
@@ -550,7 +654,9 @@ class ZedSplatamOnline(Node):
             # self.get_logger().info("Done. You can now run viz_scripts/final_recon.py on the same config.")
             # rclpy.shutdown()
             self._done = True
+
             return
+
 
     def _shutdown_tick(self):
         """Runs in the executor but outside the subscription callback context."""
@@ -584,6 +690,14 @@ def main():
     args = parse_args()
     experiment = SourceFileLoader(os.path.basename(args.config), args.config).load_module()
     cfg = experiment.config
+
+    # ---- CLI overrides config ----
+    cfg["live_cam"] = args.live_cam
+    cfg["live_splat"] = args.live_splat
+    cfg["live_depth"] = args.live_depth
+    if args.live_max_fps is not None:
+        cfg["live_max_fps"] = args.live_max_fps
+
     seed_everything(seed=cfg["seed"])
 
     rclpy.init()
