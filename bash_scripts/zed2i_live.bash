@@ -47,14 +47,14 @@ printf "%b\n" "$ENDCOLOR"
 
 
 #CONFIG=$1
-CONFIG="configs/zed2i/zed_splat_live.py"
+CONFIG="configs/zed2i/zed2i_splat_live.py"
 
 if [ ! -f "$CONFIG" ]; then
     print_color "$danger" "[ERROR] Config not found: $CONFIG"
     exit 1
 fi
-if [ ! -f "scripts/zed_splat_live.py" ]; then
-    print_color "$danger" "[ERROR] scripts/zed_splat_live.py not found"
+if [ ! -f "scripts/zed2i_splat_live.py" ]; then
+    print_color "$danger" "[ERROR] scripts/zed2i_splat_live.py not found"
     exit 1
 fi
 
@@ -62,7 +62,7 @@ print_color "$info" "[INFO] Running live SplaTAM..."
 print_color "$info" "[INFO] Config: $CONFIG"
 print_color "$info" "[INFO] Args: $*"
 
-python3 -u scripts/zed_splat_live.py \
+python3 -u scripts/zed2i_splat_live.py \
     --config "$CONFIG" \
     "$@"
 
