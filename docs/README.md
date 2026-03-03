@@ -407,10 +407,8 @@ ros2 bag info zed2i_walk
 * Ensure the **ROS_DOMAIN_ID matches** in both terminals.
 
 ---
-
 ## Pipeline with rosbag
 
 ```
 ROS2 Bag → ROS2 Topics → SplaTAM → Gaussian Splat → params.npz → final_recon.py
 ```
-
