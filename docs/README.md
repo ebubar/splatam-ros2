@@ -58,7 +58,7 @@ viz_scripts/final_recon.py
 Both Orin and PC must use the same domain:
 
 ```bash
-export ROS_DOMAIN_ID=77
+export ROS_DOMAIN_ID=<domain_id>
 ```
 
 Both devices must be on the same network.
@@ -182,7 +182,7 @@ Activate environment:
 
 ```bash
 conda activate splatam_v2
-export ROS_DOMAIN_ID=77
+export ROS_DOMAIN_ID=<domain_id>
 ```
 
 ---
@@ -243,19 +243,19 @@ python3 scripts/zed2i_splat_live.py \
 Use the bash script:
 
 ```
-bash_scripts/zed_live.bash
+bash_scripts/zed2i_live.bash
 ```
 
 ### Make executable
 
 ```bash
-chmod +x bash_scripts/zed_live.bash
+chmod +x bash_scripts/zed2i_live.bash
 ```
 
 ### Run
 
 ```bash
-./bash_scripts/zed_live.bash
+./bash_scripts/zed2i_live.bash
 ```
 
 ---
@@ -263,11 +263,11 @@ chmod +x bash_scripts/zed_live.bash
 ### With Extra Flags
 
 ```bash
-./bash_scripts/zed_live.bash --live_cam
+./bash_scripts/zed2i_live.bash --live_cam
 ```
 
 ```bash
-./bash_scripts/zed_live.bash --live_cam --live_depth
+./bash_scripts/zed2i_live.bash --live_cam --live_depth
 ```
 
 ---
