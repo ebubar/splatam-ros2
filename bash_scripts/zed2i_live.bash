@@ -48,7 +48,7 @@ printf "%b\n" "$ENDCOLOR"
 
 #CONFIG=$1
 CONFIG="configs/zed2i/zed2i_splat_live.py"
-
+OUTPUT="experiments/ZED2i_Captures/zed2i_ros2_demo/SplaTAM_ZED2i_ROS2/splat.ply"
 if [ ! -f "$CONFIG" ]; then
     print_color "$danger" "[ERROR] Config not found: $CONFIG"
     exit 1
@@ -68,6 +68,31 @@ python3 -u scripts/zed2i_splat_live.py \
 
 print_color "$success" "[SUCCESS] Live run complete."
 
+
+print_color "$info" "[INFO] Exporting PLY..."
+python3 -u scripts/export_ply.py "$CONFIG"
+print_color "$success" "[SUCCESS] PLY export complete."
+
 print_color "$info" "[INFO] Launching final reconstruction viewer..."
+print_color "$warning" ""
+print_color "$warning" "-----------------------------------------------"
+print_color "$warning" " Final Reconstruction Viewer Running"
+print_color "$warning" "-----------------------------------------------"
+print_color "$warning" " Press:  q  or  Q  or  ESC  to quit the viewer"
+print_color "$warning" "-----------------------------------------------"
+print_color "$warning" ""
 
 python3 -u viz_scripts/final_recon.py "$CONFIG"
+
+
+print_color "$success" ""
+print_color "$success" "==============================================="
+print_color "$success" "      ALL PIPELINE STAGES COMPLETED ✔"
+print_color "$success" "==============================================="
+print_color "$success" "1. ✔ zed2i_splat_live.py"
+print_color "$success" "2. ✔ export_ply.py"
+print_color "$success" "3. ✔ final_recon.py"
+print_color "$success" ""
+print_color "$success" "Output PLY file:"
+print_color "$success" "  $OUTPUT"
+print_color "$success" ""

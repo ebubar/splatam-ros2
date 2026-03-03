@@ -220,13 +220,45 @@ class ZedSplatamOnline(Node):
         self.total_frames = 0
         self.num_frames = int(self.cfg["num_frames"])
         self.device = torch.device(self.cfg.get("primary_device", "cuda:0"))
+
+        # create BOTH folders (as you requested)
+        live_stream_dir = self.cfg.get("live_stream_dir", None)
+        mp4_dir = self.cfg.get("mp4_dir", None)
+
+        if live_stream_dir is not None:
+            os.makedirs(live_stream_dir, exist_ok=True)
+        if mp4_dir is not None:
+            os.makedirs(mp4_dir, exist_ok=True)
+
+        # MP4s go here
+        record_dir = mp4_dir
+
         self.live = LiveRenderer(
             LiveRendererConfig(
+                # Live windows (optional)
                 live_cam=bool(self.cfg.get("live_cam", False)),
                 live_depth=bool(self.cfg.get("live_depth", False)),
                 live_splat=bool(self.cfg.get("live_splat", False)),
                 max_fps=float(self.cfg.get("live_max_fps", 30.0)),
+
+                # RECORD MP4s
+                record_dir=record_dir,
+                record_tag=self.run_name,
+                record_fps=float(self.cfg.get("record_fps", 30.0)),
+                record_cam=bool(self.cfg.get("record_cam", True)),
+                record_depth=bool(self.cfg.get("record_depth", True)),
+                record_splat=bool(self.cfg.get("record_splat", True)),
             )
+        )
+
+        self.record_cam = bool(self.cfg.get("record_cam", True)) and (record_dir is not None)
+        self.record_depth = bool(self.cfg.get("record_depth", True)) and (record_dir is not None)
+        self.record_splat = bool(self.cfg.get("record_splat", True)) and (record_dir is not None)
+
+        self.get_logger().info(f"live_stream_dir={live_stream_dir}")
+        self.get_logger().info(f"mp4_dir={mp4_dir}")
+        self.get_logger().info(
+            f"Recording MP4s: dir={record_dir} cam={self.record_cam} depth={self.record_depth} splat={self.record_splat}"
         )
         self.get_logger().info(
         f"LiveRenderer: live_cam={self.cfg.get('live_cam')} "
@@ -277,12 +309,44 @@ class ZedSplatamOnline(Node):
 
         return torch_rgb_chw_to_bgr8(im)
 
+    def _finalize_and_exit(self, exit_code: int = 0) -> None:
+        if getattr(self, "_exiting", False):
+            return
+        self._exiting = True
+
+        try:
+            self.live.close()
+        except Exception:
+            pass
+
+        if (not self._final_saved) and (self.params is not None):
+            self._final_saved = True
+
+            self.params["timestep"] = self.variables["timestep"]
+            self.params["intrinsics"] = self.intrinsics.detach().cpu().numpy()
+            self.params["w2c"] = self.first_frame_w2c.detach().cpu().numpy()
+            self.params["org_width"] = self.cfg["data"]["desired_image_width"]
+            self.params["org_height"] = self.cfg["data"]["desired_image_height"]
+            self.params["gt_w2c_all_frames"] = np.stack(
+                [m.detach().cpu().numpy() for m in self.gt_w2c_all_frames], axis=0
+            )
+            self.params["keyframe_time_indices"] = np.array(self.keyframe_time_indices)
+
+            save_params(self.params, str(self.output_dir))
+            self.get_logger().info(f"Saved SplaTAM output to: {self.output_dir}")
+            self.get_logger().info("Done. Launching final_recon next (bash) ...")
+
+        # IMPORTANT: do NOT call destroy_node() / rclpy.shutdown() from inside a callback.
+        # Just terminate so bash can continue.
+        os._exit(exit_code)
+
     def synced_cb(self, rgb_msg: Image, depth_msg: Image, rgb_info: CameraInfo, depth_info: CameraInfo):
         if self.total_frames >= self.num_frames:
             return
 
         if self.t0 is None:
             self.t0 = time.time()
+        curr_w2c = None
 
         # --- Convert ROS images to numpy ---
         # RGB: cv_bridge gives BGR for "bgr8" and RGB for "rgb8"
@@ -335,14 +399,18 @@ class ZedSplatamOnline(Node):
             else:
                 cam_bgr = rgb_rs  # assume already BGR
 
-        if "curr_w2c" not in locals() or curr_w2c is None:
+        # if "curr_w2c" not in locals() or curr_w2c is None:
+        #     curr_w2c = self.last_valid_w2c
+
+        if curr_w2c is None:
             curr_w2c = self.last_valid_w2c
 
+
         # --- Live previews (only if enabled) ---
-        if self.cfg.get("live_cam", False):
+        if self.cfg.get("live_cam", False) or self.record_cam:
             self.live.update_cam(cam_bgr)
 
-        if self.cfg.get("live_depth", False):
+        if self.cfg.get("live_depth", False) or self.record_depth:
             self.live.update_depth(depth_rs)
 
 
@@ -536,25 +604,19 @@ class ZedSplatamOnline(Node):
             # Keyframe selection MUST happen regardless of densify
             with torch.no_grad():
                 num_keyframes = int(self.cfg["mapping_window_size"]) - 2
+
+                kf_pool = self.keyframe_list[:-1]
+
                 selected_keyframes = keyframe_selection_overlap(
-                    depth, curr_w2c, self.intrinsics, self.keyframe_list[:-1], num_keyframes
+                    depth, curr_w2c, self.intrinsics, kf_pool, num_keyframes
                 )
-                selected_time_idx = [self.keyframe_list[i]["id"] for i in selected_keyframes]
+
+                selected_time_idx = [kf_pool[i]["id"] for i in selected_keyframes]
+
                 if len(self.keyframe_list) > 0:
                     selected_time_idx.append(self.keyframe_list[-1]["id"])
                     selected_keyframes.append(len(self.keyframe_list) - 1)
-                selected_time_idx.append(time_idx)
-                selected_keyframes.append(-1)           
 
-
-                num_keyframes = int(self.cfg["mapping_window_size"]) - 2
-                selected_keyframes = keyframe_selection_overlap(
-                    depth, curr_w2c, self.intrinsics, self.keyframe_list[:-1], num_keyframes
-                )
-                selected_time_idx = [self.keyframe_list[i]["id"] for i in selected_keyframes]
-                if len(self.keyframe_list) > 0:
-                    selected_time_idx.append(self.keyframe_list[-1]["id"])
-                    selected_keyframes.append(len(self.keyframe_list) - 1)
                 selected_time_idx.append(time_idx)
                 selected_keyframes.append(-1)
 
@@ -617,46 +679,39 @@ class ZedSplatamOnline(Node):
                 self.keyframe_time_indices.append(time_idx)
 
         # ---- Live splat preview (REAL render) ----
-        if self.cfg.get("live_splat", False) and (self.params is not None):
-            if "curr_w2c" not in locals() or curr_w2c is None:
+        # if (self.cfg.get("live_splat", False) or self.record_splat) and (self.params is not None):
+        #     if "curr_w2c" not in locals() or curr_w2c is None:
+        #         curr_w2c = self.last_valid_w2c
+
+        #     preview_bgr = self._render_splat_preview(curr_w2c, time_idx)
+        #     if preview_bgr is not None:
+        #         self.live.update_splat_preview(preview_bgr)
+
+        if (self.cfg.get("live_splat", False) or self.record_splat) and (self.params is not None):
+            if curr_w2c is None:
                 curr_w2c = self.last_valid_w2c
 
             preview_bgr = self._render_splat_preview(curr_w2c, time_idx)
             if preview_bgr is not None:
                 self.live.update_splat_preview(preview_bgr)
 
+        # increment + print  (ALWAYS)
         self.total_frames += 1
-
         self.get_logger().info(
             f"Frame {self.total_frames}/{self.num_frames} | rgb_enc={rgb_encoding} depth_enc={depth_encoding} | track_dt={tracking_dt:.3f}s"
         )
 
-        # ---- Tick ONCE per frame (LAST thing) ----
+        # If live windows are enabled, tick them
         if not self.live.tick():
             self.get_logger().info("LiveRenderer requested quit.")
-            self._done = True
-            return
-        if self.total_frames == self.num_frames:
-            # # Save like other pipelines
-            # # Add camera + bookkeeping like splatam.py does
-            # self.params["timestep"] = self.variables["timestep"]
-            # self.params["intrinsics"] = self.intrinsics.detach().cpu().numpy()
-            # self.params["w2c"] = self.first_frame_w2c.detach().cpu().numpy()
-            # self.params["org_width"] = self.cfg["data"]["desired_image_width"]
-            # self.params["org_height"] = self.cfg["data"]["desired_image_height"]
-            # self.params["gt_w2c_all_frames"] = np.stack(
-            #     [m.detach().cpu().numpy() for m in self.gt_w2c_all_frames], axis=0
-            # )
-            # self.params["keyframe_time_indices"] = np.array(self.keyframe_time_indices)
-
-            # save_params(self.params, str(self.output_dir))
-            # self.get_logger().info(f"Saved SplaTAM output to: {self.output_dir}")
-            # self.get_logger().info("Done. You can now run viz_scripts/final_recon.py on the same config.")
-            # rclpy.shutdown()
-            self._done = True
-
+            self._finalize_and_exit(exit_code=0)
             return
 
+        # HARD STOP once we hit the last frame
+        if self.total_frames >= self.num_frames:
+            self.get_logger().info("Reached final frame. Finalizing and exiting...")
+            self._finalize_and_exit(exit_code=0)
+            return
 
     def _shutdown_tick(self):
         """Runs in the executor but outside the subscription callback context."""
