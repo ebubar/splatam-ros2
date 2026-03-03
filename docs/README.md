@@ -334,3 +334,83 @@ This launches the Open3D viewer.
 ```
 ZED2i → ROS2 → Online SplaTAM → Real-Time Gaussian Splat → Save → View
 ```
+---
+
+
+# Using a ROS2 Bag in a Separate Terminal
+
+Runing SplaTAM from a **recorded ROS2 bag** instead of a live ZED2i camera, you can replay the bag while SplaTAM subscribes to the same topics.
+
+This requires **two terminals on the PC**.
+
+---
+
+## Terminal A — Run SplaTAM
+
+In another terminal on the PC:
+
+```bash
+conda activate splatam_v2
+export ROS_DOMAIN_ID=<domain_id>
+```
+
+Run the live SplaTAM pipeline:
+
+```bash
+python3 scripts/zed2i_splat_live.py \
+  --config configs/zed2i/zed2i_splat_live.py \
+  --live_cam --live_depth --live_splat
+```
+
+---
+
+## Terminal B — Play the ROS2 Bag
+
+Load ROS2 and match the domain ID used by the SplaTAM node.
+
+```bash
+source /opt/ros/humble/setup.bash
+export ROS_DOMAIN_ID=<domain_id>
+````
+
+Then play the bag:
+
+```bash
+ros2 bag play zed2i_walk
+```
+
+---
+
+## Required Topics
+
+All **ZED topics exist in the bag**, but SplaTAM only requires the following:
+
+```
+/zed/zed_node/rgb/color/rect/image
+/zed/zed_node/rgb/color/rect/image/camera_info
+/zed/zed_node/depth/depth_registered
+/zed/zed_node/depth/depth_registered/camera_info
+```
+
+You can verify the topics in a bag with:
+
+```bash
+ros2 bag info zed2i_walk
+```
+
+---
+
+## Notes
+
+* SplaTAM can be started **before or after** the bag begins playing.
+* If started early, it will simply wait for synchronized RGB + depth frames.
+* Ensure the **ROS_DOMAIN_ID matches** in both terminals.
+
+---
+
+## Pipeline with rosbag
+
+```
+ROS2 Bag → ROS2 Topics → SplaTAM → Gaussian Splat → params.npz → final_recon.py
+```
+
