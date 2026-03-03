@@ -29,6 +29,18 @@ dist/
 /experiments/
 /wandb/
 
+# --- ADDED: ROS2 + bags + specific files ---
+install/
+log/
+.colcon/
+*.db3
+*.bag
+bags/
+bags.zip
+zed_bag.zip
+scripts/splatam_zed2i copy 2.py
+# --- END ADDED ---
+
 # Virtualenvs
 venv_requirements.txt
 # Sub-Directories

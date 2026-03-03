@@ -84,6 +84,57 @@ def depth_to_meters(depth_cv: np.ndarray, encoding: str) -> np.ndarray:
     # Fallback: try float conversion (better than crashing)
     return depth_cv.astype(np.float32)
 
+def pose_is_valid(params, time_idx, eps=1e-6) -> bool:
+    """
+    Returns False if the current estimated pose would likely produce a singular w2c.
+    This prevents add_new_gaussians -> get_pointcloud -> inverse(w2c) crashes.
+    """
+    q = params["cam_unnorm_rots"][..., time_idx].detach()
+    t = params["cam_trans"][..., time_idx].detach()
+
+    # Finite check
+    if (not torch.isfinite(q).all()) or (not torch.isfinite(t).all()):
+        return False
+
+    # Safe normalize quaternion
+    qn = F.normalize(q, dim=-1, eps=eps)
+    if not torch.isfinite(qn).all():
+        return False
+
+    # Rotation matrix should be finite and non-degenerate
+    R = build_rotation(qn)
+    if not torch.isfinite(R).all():
+        return False
+
+    detR = torch.det(R)
+    if (not torch.isfinite(detR)) or (torch.abs(detR) < 1e-6):
+        return False
+
+    return True
+
+def w2c_from_params(params, time_idx, device, eps=1e-6):
+    q = params["cam_unnorm_rots"][..., time_idx].detach()
+    t = params["cam_trans"][..., time_idx].detach()
+
+    if (not torch.isfinite(q).all()) or (not torch.isfinite(t).all()):
+        return None
+
+    qn = F.normalize(q, dim=-1, eps=eps)
+    if not torch.isfinite(qn).all():
+        return None
+
+    R = build_rotation(qn)
+    if not torch.isfinite(R).all():
+        return None
+
+    detR = torch.det(R)
+    if (not torch.isfinite(detR)) or (torch.abs(detR) < 1e-6):
+        return None
+
+    w2c = torch.eye(4, device=device).float()
+    w2c[:3, :3] = R
+    w2c[:3, 3] = t
+    return w2c
 
 class ZedSplatamOnline(Node):
     def __init__(self, config: dict):
@@ -99,7 +150,11 @@ class ZedSplatamOnline(Node):
         self.run_name = self.cfg.get("run_name", "SplaTAM_ZED2i")
         self.output_dir = self.workdir / self.run_name
         self.output_dir.mkdir(parents=True, exist_ok=True)
-
+        self.params = None
+        self.variables = None
+        self.intrinsics = None
+        self.first_frame_w2c = None
+        self.cam = None
         # Optional: overwrite behavior
         if self.cfg.get("overwrite", False) and self.output_dir.exists():
             shutil.rmtree(self.output_dir)
@@ -139,7 +194,8 @@ class ZedSplatamOnline(Node):
         self.total_frames = 0
         self.num_frames = int(self.cfg["num_frames"])
         self.device = torch.device(self.cfg.get("primary_device", "cuda:0"))
-
+        self.last_valid_w2c = torch.eye(4, device=self.device).float()
+        self.last_valid_time_idx = 0
         self.params = None
         self.variables = None
         self.intrinsics = None
@@ -345,28 +401,61 @@ class ZedSplatamOnline(Node):
                 self.params["cam_unnorm_rots"][..., time_idx] = candidate_rot
                 self.params["cam_trans"][..., time_idx] = candidate_trn
 
+            # ---- Final quaternion safety normalization ----
+            with torch.no_grad():
+                self.params["cam_unnorm_rots"][..., time_idx] = F.normalize(
+                    self.params["cam_unnorm_rots"][..., time_idx], dim=-1, eps=1e-6
+                )
+ 
+            # ---- Build a safe pose for this frame (used by mapping/keyframes/densify) ----
+            curr_w2c = w2c_from_params(self.params, time_idx, self.device)
+
+            if curr_w2c is None:
+                self.get_logger().warn(
+                    f"Frame {time_idx}: pose invalid/singular. Using last valid pose from frame {self.last_valid_time_idx}."
+                )
+                curr_w2c = self.last_valid_w2c
+            else:
+                self.last_valid_w2c = curr_w2c
+                self.last_valid_time_idx = time_idx
         tracking_dt = time.time() - tracking_start
 
         # --- Mapping (keyframe window) ---
         if (time_idx == 0) or ((time_idx + 1) % int(self.cfg["map_every"]) == 0):
+            # Ensure curr_w2c always exists (frame 0 won’t run tracking)
+            if time_idx == 0:
+                curr_w2c = self.first_frame_w2c.detach().clone()
+                self.last_valid_w2c = curr_w2c
+                self.last_valid_time_idx = 0           
+        
             # Densify add-new-gaussians (optional)
             if self.cfg["mapping"]["add_new_gaussians"] and time_idx > 0:
-                # Build densify curr_data using densify_cam + densify_intrinsics and resized densify images
-                # For now: reuse current res images for simplicity (works); we can upgrade later.
-                densify_curr_data = curr_data
-                self.params, self.variables = add_new_gaussians(
-                    self.params, self.variables, densify_curr_data,
-                    self.cfg["mapping"]["sil_thres"], time_idx,
-                    self.cfg["mean_sq_dist_method"], self.cfg.get("gaussian_distribution", "isotropic")
-                )
-
-            # Select keyframes for mapping
+                if pose_is_valid(self.params, time_idx):
+                    densify_curr_data = curr_data
+                    self.params, self.variables = add_new_gaussians(
+                        self.params, self.variables, densify_curr_data,
+                        self.cfg["mapping"]["sil_thres"], time_idx,
+                        self.cfg["mean_sq_dist_method"], self.cfg.get("gaussian_distribution", "isotropic")
+                    )
+                else:
+                    self.get_logger().warn(
+                        f"Skipping add_new_gaussians at frame {time_idx}: invalid pose (would be singular)"
+                    )
+                
+            #
+            # ✅ Keyframe selection MUST happen regardless of densify
             with torch.no_grad():
-                curr_cam_rot = F.normalize(self.params["cam_unnorm_rots"][..., time_idx].detach())
-                curr_cam_tran = self.params["cam_trans"][..., time_idx].detach()
-                curr_w2c = torch.eye(4, device=self.device).float()
-                curr_w2c[:3, :3] = build_rotation(curr_cam_rot)
-                curr_w2c[:3, 3] = curr_cam_tran
+                num_keyframes = int(self.cfg["mapping_window_size"]) - 2
+                selected_keyframes = keyframe_selection_overlap(
+                    depth, curr_w2c, self.intrinsics, self.keyframe_list[:-1], num_keyframes
+                )
+                selected_time_idx = [self.keyframe_list[i]["id"] for i in selected_keyframes]
+                if len(self.keyframe_list) > 0:
+                    selected_time_idx.append(self.keyframe_list[-1]["id"])
+                    selected_keyframes.append(len(self.keyframe_list) - 1)
+                selected_time_idx.append(time_idx)
+                selected_keyframes.append(-1)           
+
 
                 num_keyframes = int(self.cfg["mapping_window_size"]) - 2
                 selected_keyframes = keyframe_selection_overlap(
@@ -430,8 +519,10 @@ class ZedSplatamOnline(Node):
         # Add keyframe
         if ((time_idx == 0) or ((time_idx + 1) % int(self.cfg["keyframe_every"]) == 0) or (time_idx == self.num_frames - 2)):
             with torch.no_grad():
-                curr_keyframe = {"id": time_idx, "est_w2c": torch.eye(4, device=self.device).float(),
-                                 "color": color, "depth": depth}
+                # curr_keyframe = {"id": time_idx, "est_w2c": torch.eye(4, device=self.device).float(),
+                #                  "color": color, "depth": depth}
+                curr_keyframe = {"id": time_idx, "est_w2c": curr_w2c.detach().clone(),
+                                "color": color, "depth": depth}               
                 self.keyframe_list.append(curr_keyframe)
                 self.keyframe_time_indices.append(time_idx)
 

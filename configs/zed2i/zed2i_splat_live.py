@@ -5,7 +5,7 @@ base_dir = "./experiments/ZED2i_Captures"
 scene_name = "zed2i_ros2_demo"
 run_name = "SplaTAM_ZED2i_ROS2"
 
-num_frames = 9
+num_frames = 59
 
 # Topics (MATCH YOUR ros2 topic list)
 zed_rgb_topic = "/zed/zed_node/rgb/color/rect/image"
@@ -72,7 +72,7 @@ config = dict(
 
     mapping=dict(
         num_iters=60,
-        add_new_gaussians=True,
+        add_new_gaussians=False,
         sil_thres=0.5,
         use_l1=True,
         ignore_outlier_depth_loss=False,
