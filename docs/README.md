@@ -335,6 +335,53 @@ This launches the Open3D viewer.
 ZED2i → ROS2 → Online SplaTAM → Real-Time Gaussian Splat → Save → View
 ```
 ---
+# Using Live (ZED2i)
+
+Running the SplaTAM with the with the ZED camera live, shell into the Orin using.
+
+---
+
+## Terminal A — Run SplaTAM
+
+In another terminal on the PC:
+
+```bash
+conda activate splatam_v2
+export ROS_DOMAIN_ID=<domain_id>
+```
+
+Run the live SplaTAM pipeline:
+
+```bash
+python3 scripts/zed2i_splat_live.py \
+  --config configs/zed2i/zed2i_splat_live.py \
+  --live_cam --live_depth --live_splat
+```
+---
+
+## Terminal B - Shell into the Orin
+
+```bash
+ssh nvida10.131.7.xxx
+```
+
+Enter the password to the orin.
+
+
+```bash
+source /opt/ros/humble/setup.bash
+export ROS_DOMAIN_ID=<domain_id>
+```
+
+To launch the zed wrapper node, execute bying running the following command:
+
+
+```bash
+ros2 launch zed_wrapper <> camera_model:=zed2i pos_tracking_mode:=GEN_3
+```
+
+
+
 
 
 # Using a ROS2 Bag in a Separate Terminal

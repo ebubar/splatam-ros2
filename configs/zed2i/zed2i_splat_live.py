@@ -5,7 +5,7 @@ base_dir = "./experiments/ZED2i_Captures"
 scene_name = "zed2i_ros2_demo"
 run_name = "SplaTAM_ZED2i_ROS2"
 
-num_frames = 57
+num_frames = 80
 
 
 # ALWAYS-ON LiveStream Recording 
@@ -17,7 +17,7 @@ record_splat = True
 record_fps = 30.0
 
 
-# ROS Topics (MATCH YOUR ros2 topic list)
+# ROS Topics
 
 zed_rgb_topic = "/zed/zed_node/rgb/color/rect/image"
 # zed_rgb_topic = "/zed/zed_node/rgb/color/rect/image/compressed"
@@ -171,10 +171,12 @@ config = dict(
         viz_h=360,
         viz_near=0.01,
         viz_far=50.0,
+        viz_fps=5, 
         view_scale=1.0,
         render_mode="rgb",  # rgb | depth | centers
         show_sil=False,
-        visualize_cams=True,
+        visualize_cams=False,
         offset_first_viz_cam=False,
+
     ),
 )
