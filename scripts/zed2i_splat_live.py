@@ -377,6 +377,17 @@ class ZedSplatamOnline(Node):
         rgb_rs = cv2.resize(rgb_cv, (W, H), interpolation=cv2.INTER_LINEAR)
         depth_rs = cv2.resize(depth_m, (W, H), interpolation=cv2.INTER_NEAREST)
 
+        depth_rs = depth_rs.astype(np.float32)
+        depth_rs[~np.isfinite(depth_rs)] = 0.0
+        depth_rs[(depth_rs < 0.1) | (depth_rs > 10.0)] = 0.0  # adjust max range if needed
+
+        valid = (depth_rs > 0.0)
+        valid_ratio = float(valid.mean())
+        if valid_ratio < 0.05:
+            self.get_logger().warn(
+                f"Frame {self.total_frames}: depth too invalid ({valid_ratio*100:.1f}% valid). "
+                f"Skipping tracking/mapping; using last valid pose frame {self.last_valid_time_idx}."
+            )
         # Sanity checks (helps a ton when encodings change)
         if rgb_rs.ndim != 3:
             self.get_logger().warn(f"Unexpected RGB shape: {rgb_rs.shape}")
@@ -524,58 +535,99 @@ class ZedSplatamOnline(Node):
         if time_idx > 0:
             self.params = initialize_camera_pose(self.params, time_idx, forward_prop=self.cfg["tracking"]["forward_prop"])
 
-        # --- Tracking ---
-        tracking_start = time.time()
-        if time_idx > 0 and not self.cfg["tracking"]["use_gt_poses"]:
-            optimizer = initialize_optimizer(self.params, self.cfg["tracking"]["lrs"], tracking=True)
-            candidate_rot = self.params["cam_unnorm_rots"][..., time_idx].detach().clone()
-            candidate_trn = self.params["cam_trans"][..., time_idx].detach().clone()
-            current_min_loss = float(1e20)
+        if time_idx > 0 and valid_ratio < 0.05:
+            # Keep pose fixed to last valid
+            curr_w2c = self.last_valid_w2c
+            with torch.no_grad():
+                self.params["cam_unnorm_rots"][..., time_idx] = self.params["cam_unnorm_rots"][..., self.last_valid_time_idx]
+                self.params["cam_trans"][..., time_idx]       = self.params["cam_trans"][..., self.last_valid_time_idx]
 
-            num_iters_tracking = int(self.cfg["tracking"]["num_iters"])
-            for it in range(num_iters_tracking):
-                loss, self.variables, losses = get_loss(
-                    self.params, tracking_curr_data, self.variables, time_idx,
-                    self.cfg["tracking"]["loss_weights"],
-                    self.cfg["tracking"]["use_sil_for_loss"],
-                    self.cfg["tracking"]["sil_thres"],
-                    self.cfg["tracking"]["use_l1"],
-                    self.cfg["tracking"]["ignore_outlier_depth_loss"],
-                    tracking=True,
-                    visualize_tracking_loss=self.cfg["tracking"].get("visualize_tracking_loss", False),
-                    tracking_iteration=it,
-                )
-                loss.backward()
-                optimizer.step()
-                optimizer.zero_grad(set_to_none=True)
+            tracking_dt = 0.0
+        else:
+            tracking_start = time.time()
+            if time_idx > 0 and not self.cfg["tracking"]["use_gt_poses"]:
+            # --- Tracking ---
+            # tracking_start = time.time()
+            # if time_idx > 0 and not self.cfg["tracking"]["use_gt_poses"]:
+                optimizer = initialize_optimizer(self.params, self.cfg["tracking"]["lrs"], tracking=True)
+                candidate_rot = self.params["cam_unnorm_rots"][..., time_idx].detach().clone()
+                candidate_trn = self.params["cam_trans"][..., time_idx].detach().clone()
+                current_min_loss = float(1e20)
+
+                num_iters_tracking = int(self.cfg["tracking"]["num_iters"])
+                for it in range(num_iters_tracking):
+                    loss, self.variables, losses = get_loss(
+                        self.params, tracking_curr_data, self.variables, time_idx,
+                        self.cfg["tracking"]["loss_weights"],
+                        self.cfg["tracking"]["use_sil_for_loss"],
+                        self.cfg["tracking"]["sil_thres"],
+                        self.cfg["tracking"]["use_l1"],
+                        self.cfg["tracking"]["ignore_outlier_depth_loss"],
+                        tracking=True,
+                        visualize_tracking_loss=self.cfg["tracking"].get("visualize_tracking_loss", False),
+                        tracking_iteration=it,
+                    )
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(
+                    [self.params["cam_unnorm_rots"], self.params["cam_trans"]],
+                    max_norm=1.0
+                    )
+                    optimizer.step()
+                    optimizer.zero_grad(set_to_none=True)
+
+                    with torch.no_grad():
+                        if loss < current_min_loss:
+                            current_min_loss = loss
+                            candidate_rot = self.params["cam_unnorm_rots"][..., time_idx].detach().clone()
+                            candidate_trn = self.params["cam_trans"][..., time_idx].detach().clone()
 
                 with torch.no_grad():
-                    if loss < current_min_loss:
-                        current_min_loss = loss
-                        candidate_rot = self.params["cam_unnorm_rots"][..., time_idx].detach().clone()
-                        candidate_trn = self.params["cam_trans"][..., time_idx].detach().clone()
+                    self.params["cam_unnorm_rots"][..., time_idx] = candidate_rot
+                    self.params["cam_trans"][..., time_idx] = candidate_trn
 
-            with torch.no_grad():
-                self.params["cam_unnorm_rots"][..., time_idx] = candidate_rot
-                self.params["cam_trans"][..., time_idx] = candidate_trn
+                # ---- Final quaternion safety normalization ----
+                with torch.no_grad():
+                    self.params["cam_unnorm_rots"][..., time_idx] = F.normalize(
+                        self.params["cam_unnorm_rots"][..., time_idx], dim=-1, eps=1e-6
+                    )
+    
+                # ---- Build a safe pose for this frame (used by mapping/keyframes/densify) ----
+                # curr_w2c = w2c_from_params(self.params, time_idx, self.device)
 
-            # ---- Final quaternion safety normalization ----
-            with torch.no_grad():
-                self.params["cam_unnorm_rots"][..., time_idx] = F.normalize(
-                    self.params["cam_unnorm_rots"][..., time_idx], dim=-1, eps=1e-6
-                )
- 
-            # ---- Build a safe pose for this frame (used by mapping/keyframes/densify) ----
-            curr_w2c = w2c_from_params(self.params, time_idx, self.device)
+                # if curr_w2c is None:
+                #     self.get_logger().warn(
+                #         f"Frame {time_idx}: pose invalid/singular. Using last valid pose from frame {self.last_valid_time_idx}."
+                #     )
+                #     curr_w2c = self.last_valid_w2c
+                # else:
+                #     self.last_valid_w2c = curr_w2c
+                #     self.last_valid_time_idx = time_idx
+        
+                curr_w2c = w2c_from_params(self.params, time_idx, self.device)
 
-            if curr_w2c is None:
-                self.get_logger().warn(
-                    f"Frame {time_idx}: pose invalid/singular. Using last valid pose from frame {self.last_valid_time_idx}."
-                )
-                curr_w2c = self.last_valid_w2c
-            else:
-                self.last_valid_w2c = curr_w2c
-                self.last_valid_time_idx = time_idx
+                if curr_w2c is None:
+                    q = self.params["cam_unnorm_rots"][..., time_idx].detach()
+                    t = self.params["cam_trans"][..., time_idx].detach()
+
+                    self.get_logger().warn(
+                        f"Frame {time_idx}: pose invalid/singular. Resetting to last valid (frame {self.last_valid_time_idx}). "
+                        f"q_finite={bool(torch.isfinite(q).all())} "
+                        f"t_finite={bool(torch.isfinite(t).all())} "
+                        f"|q|={float(torch.linalg.norm(q).item()):.3e} "
+                        f"|t|={float(torch.linalg.norm(t).item()):.3e}"
+                    )
+
+                    # Use last valid for downstream
+                    curr_w2c = self.last_valid_w2c
+
+                    # CRITICAL: repair params so next frame doesn't inherit garbage
+                    with torch.no_grad():
+                        self.params["cam_unnorm_rots"][..., time_idx] = self.params["cam_unnorm_rots"][..., self.last_valid_time_idx]
+                        self.params["cam_trans"][..., time_idx]       = self.params["cam_trans"][..., self.last_valid_time_idx]
+                else:
+                    self.last_valid_w2c = curr_w2c
+                    self.last_valid_time_idx = time_idx
+   
         tracking_dt = time.time() - tracking_start
 
         # --- Mapping (keyframe window) ---
