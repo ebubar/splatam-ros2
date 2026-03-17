@@ -459,3 +459,125 @@ ros2 bag info zed2i_walk
 ```
 ROS2 Bag → ROS2 Topics → SplaTAM → Gaussian Splat → params.npz → final_recon.py
 ```
+
+
+
+# Automated Pipeline 
+
+fully automated pipeline:
+
+* Runs ZED on the Orin
+* Records a ROS2 bag
+* Transfers the bag to the PC
+* Runs SplaTAM
+* Plays the bag **in parallel with SplaTAM**
+
+---
+
+## Script Location
+
+```
+bash_scripts/main.bash
+```
+
+---
+
+## How to Run
+
+```bash
+bash bash_scripts/main.bash <run_name> <orin_ip> <teamings_ip> <duration_sec>
+```
+
+---
+
+## Arguments
+
+| Argument         | Description                                          |
+| ---------------- | ---------------------------------------------------- |
+| `<run_name>`     | Name of the run (used for bag + folder naming)       |
+| `<orin_ip>`      | IP address of the Orin                               |
+| `<teamings_ip>`  | IP address of this PC                                |
+| `<duration_sec>` | Recording duration (in seconds)                      |
+
+---
+
+## Example
+
+```bash
+bash bash_scripts/main.bash zed2i_walk 10.131.7.87 10.131.7.185 60
+```
+
+This will:
+
+1. Connect to the Orin (`10.131.7.87`)
+2. Launch the ZED2i ROS2 node
+3. Record a ROS2 bag for **60 seconds**
+4. Copy the bag to:
+
+```
+/home/teaming/zed2i_walk_<timestamp>/
+```
+
+5. Start SplaTAM on the PC
+6. After a short delay to let Splatam fully launch, play the ROS2 bag
+7. Run both **SplaTAM + bag playback simultaneously**
+
+---
+
+### Output Location
+
+```
+/home/teaming/zed_recordings/<run_name>_<timestamp>/
+```
+
+Contains:
+
+```
+zed2i_walk/
+  ├── metadata.yaml
+  ├── *.db3
+```
+
+---
+
+### SplaTAM Output
+
+```
+experiments/ZED2i_Captures/.../params.npz
+```
+
+---
+
+## Pipeline Behavior
+
+```
+[Orin]
+ZED → ROS2 → rosbag record
+
+        ↓ (scp)
+
+[PC]
+rosbag play → SplaTAM → Gaussian Splat → Export → Viewer
+```
+
+---
+
+## Key Behavior
+
+* SplaTAM starts **first**
+* Bag playback starts after ~5 seconds
+* Both run **at the same time**
+* SplaTAM processes frames **live from the bag**
+
+---
+
+## Troubleshooting
+
+### No frames in SplaTAM
+
+* Check ROS_DOMAIN_ID matches (However, this is set in the main)
+* Verify bag contains required topics:
+
+```bash
+ros2 bag info <bag_path>
+```

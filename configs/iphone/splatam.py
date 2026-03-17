@@ -138,7 +138,7 @@ config = dict(
         render_mode='color', # ['color', 'depth' or 'centers']
         offset_first_viz_cam=True, # Offsets the view camera back by 0.5 units along the view direction (For Final Recon Viz)
         show_sil=False, # Show Silhouette instead of RGB
-        visualize_cams=True, # Visualize Camera Frustums and Trajectory
+        visualize_cams=False, # Visualize Camera Frustums and Trajectory
         viz_w=600, viz_h=340,
         viz_near=0.01, viz_far=100.0,
         view_scale=2,

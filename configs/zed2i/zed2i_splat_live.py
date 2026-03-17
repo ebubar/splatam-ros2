@@ -5,7 +5,7 @@ base_dir = "./experiments/ZED2i_Captures"
 scene_name = "zed2i_ros2_demo"
 run_name = "SplaTAM_ZED2i_ROS2"
 
-num_frames = 80
+num_frames = 300
 
 
 # ALWAYS-ON LiveStream Recording 
@@ -20,12 +20,13 @@ record_fps = 30.0
 # ROS Topics
 
 zed_rgb_topic = "/zed/zed_node/rgb/color/rect/image"
-# zed_rgb_topic = "/zed/zed_node/rgb/color/rect/image/compressed"
+#zed_rgb_topic = "/zed/zed_node/rgb/color/rect/image/compressed"
 
 zed_rgb_info_topic = "/zed/zed_node/rgb/color/rect/image/camera_info"
+zed_rgb_info_topic = "/zed/zed_node/rgb/color/rect/camera_info"
 
 zed_depth_topic = "/zed/zed_node/depth/depth_registered"
-# zed_depth_topic = "/zed/zed_node/depth/depth_registered/compressed"
+#zed_depth_topic = "/zed/zed_node/depth/depth_registered/compressed"
 
 zed_depth_info_topic = "/zed/zed_node/depth/depth_registered/camera_info"
 
@@ -58,7 +59,7 @@ config = dict(
     
     # Core SLAM Settings
     map_every=1,
-    keyframe_every=5,
+    keyframe_every=10,
     mapping_window_size=32,
     scene_radius_depth_ratio=3,
     mean_sq_dist_method="projective",
@@ -83,7 +84,7 @@ config = dict(
         use_gt_poses=False,
         forward_prop=True,
         visualize_tracking_loss=False,
-        num_iters=60,
+        num_iters=5,
         use_sil_for_loss=True,
         sil_thres=0.99,
         use_l1=True,
@@ -105,7 +106,7 @@ config = dict(
     
     # Mapping Settings
     mapping=dict(
-        num_iters=60,
+        num_iters=5,
         add_new_gaussians=False,
         sil_thres=0.5,
         use_l1=True,
