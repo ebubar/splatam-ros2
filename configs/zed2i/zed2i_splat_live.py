@@ -5,7 +5,7 @@ base_dir = "./experiments/ZED2i_Captures"
 scene_name = "zed2i_ros2_demo"
 run_name = "SplaTAM_ZED2i_ROS2"
 
-num_frames = 300
+num_frames = 30
 
 
 # ALWAYS-ON LiveStream Recording 
@@ -20,13 +20,12 @@ record_fps = 30.0
 # ROS Topics
 
 zed_rgb_topic = "/zed/zed_node/rgb/color/rect/image"
-#zed_rgb_topic = "/zed/zed_node/rgb/color/rect/image/compressed"
+# zed_rgb_topic = "/zed/zed_node/rgb/color/rect/image/compressed"
 
 zed_rgb_info_topic = "/zed/zed_node/rgb/color/rect/image/camera_info"
-zed_rgb_info_topic = "/zed/zed_node/rgb/color/rect/camera_info"
 
 zed_depth_topic = "/zed/zed_node/depth/depth_registered"
-#zed_depth_topic = "/zed/zed_node/depth/depth_registered/compressed"
+# zed_depth_topic = "/zed/zed_node/depth/depth_registered/compressed"
 
 zed_depth_info_topic = "/zed/zed_node/depth/depth_registered/camera_info"
 
@@ -59,7 +58,7 @@ config = dict(
     
     # Core SLAM Settings
     map_every=1,
-    keyframe_every=10,
+    keyframe_every=5,
     mapping_window_size=32,
     scene_radius_depth_ratio=3,
     mean_sq_dist_method="projective",
@@ -80,11 +79,32 @@ config = dict(
 
     
     # Tracking Settings
+    # tracking=dict(
+    #     use_gt_poses=False,
+    #     forward_prop=True,
+    #     visualize_tracking_loss=False,
+    #     num_iters=60,
+    #     use_sil_for_loss=True,
+    #     sil_thres=0.99,
+    #     use_l1=True,
+    #     use_depth_loss_thres=False,
+    #     depth_loss_thres=20000,
+    #     ignore_outlier_depth_loss=False,
+    #     loss_weights=dict(im=0.5, depth=1.0),
+    #     lrs=dict(
+    #         means3D=0.0,
+    #         rgb_colors=0.0,
+    #         unnorm_rotations=0.0,
+    #         logit_opacities=0.0,
+    #         log_scales=0.0,
+    #         cam_unnorm_rots=0.001,
+    #         cam_trans=0.004,
+    #     ),
     tracking=dict(
         use_gt_poses=False,
         forward_prop=True,
         visualize_tracking_loss=False,
-        num_iters=5,
+        num_iters=80,
         use_sil_for_loss=True,
         sil_thres=0.99,
         use_l1=True,
@@ -98,16 +118,33 @@ config = dict(
             unnorm_rotations=0.0,
             logit_opacities=0.0,
             log_scales=0.0,
-            cam_unnorm_rots=0.001,
-            cam_trans=0.004,
+            cam_unnorm_rots=0.0005,
+            cam_trans=0.002,
         ),
     ),
 
     
     # Mapping Settings
+    # mapping=dict(
+    #     num_iters=60,
+    #     add_new_gaussians=False,
+    #     sil_thres=0.5,
+    #     use_l1=True,
+    #     ignore_outlier_depth_loss=False,
+    #     use_sil_for_loss=False,
+    #     loss_weights=dict(im=0.5, depth=1.0),
+    #     lrs=dict(
+    #         means3D=0.0001,
+    #         rgb_colors=0.0025,
+    #         unnorm_rotations=0.001,
+    #         logit_opacities=0.05,
+    #         log_scales=0.001,
+    #         cam_unnorm_rots=0.0,
+    #         cam_trans=0.0,
+    #     ),
     mapping=dict(
-        num_iters=5,
-        add_new_gaussians=False,
+        num_iters=80,
+        add_new_gaussians=True,
         sil_thres=0.5,
         use_l1=True,
         ignore_outlier_depth_loss=False,
@@ -117,19 +154,32 @@ config = dict(
             means3D=0.0001,
             rgb_colors=0.0025,
             unnorm_rotations=0.001,
-            logit_opacities=0.05,
-            log_scales=0.001,
+            logit_opacities=0.03,
+            log_scales=0.0005,
             cam_unnorm_rots=0.0,
             cam_trans=0.0,
         ),
+        # prune_gaussians=True,
+        # pruning_dict=dict(
+        #     start_after=0,
+        #     remove_big_after=0,
+        #     stop_after=20,
+        #     prune_every=20,
+        #     removal_opacity_threshold=0.005,
+        #     final_removal_opacity_threshold=0.005,
+        #     reset_opacities=False,
+        #     reset_opacities_every=500,
+        # ),
+        # use_gaussian_splatting_densification=False,
+
         prune_gaussians=True,
         pruning_dict=dict(
-            start_after=0,
-            remove_big_after=0,
-            stop_after=20,
+            start_after=40,
+            remove_big_after=80,
+            stop_after=400,
             prune_every=20,
-            removal_opacity_threshold=0.005,
-            final_removal_opacity_threshold=0.005,
+            removal_opacity_threshold=0.003,
+            final_removal_opacity_threshold=0.003,
             reset_opacities=False,
             reset_opacities_every=500,
         ),

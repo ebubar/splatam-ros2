@@ -19,21 +19,55 @@ color warning "93m"
 color danger "91m"
 ENDCOLOR='\033[0m'
 
+log_info() {
+    print_color "$info" "[INFO] $*" >&2
+}
+
+log_success() {
+    print_color "$success" "[SUCCESS] $*" >&2
+}
+
+log_warn() {
+    print_color "$warning" "[WARN] $*" >&2
+}
+
+log_error() {
+    print_color "$danger" "[ERROR] $*" >&2
+}
+
+# PARSE ARGS
+RQT_FLAG=false
+POSITIONAL=()
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --rqt)
+            RQT_FLAG=true
+            shift
+            ;;
+        *)
+            POSITIONAL+=("$1")
+            shift
+            ;;
+    esac
+done
+
+set -- "${POSITIONAL[@]}"
 
 if [ "$#" -lt 4 ]; then
-    print_color "$danger" "[ERROR] Usage:"
-    print_color "$danger" "  bash $0 <run_name> <orin_ip> <teamings_ip> <capture_seconds>"
+    log_error "Usage:"
+    log_error "  bash $0 <run_name> <orin_ip> <local_ip> <capture_seconds> [--rqt]"
     exit 1
 fi
 
 RUN_NAME="$1"
 ORIN_HOST="$2"
-TEAMINGS_HOST="$3"   
+LOCAL_HOST="$3"
 CAPTURE_SECONDS="$4"
 
-
-# CONFIG
+# config
 ORIN_USER="nvidia"
+ORIN_SSH="${ORIN_USER}@${ORIN_HOST}"
 
 REMOTE_ROS_SETUP="/opt/ros/humble/setup.bash"
 REMOTE_WS_SETUP="/home/nvidia/ros2_ws/install/setup.bash"
@@ -50,24 +84,34 @@ LOCAL_RUN_DIR="$LOCAL_BASE_DIR/$RUN_ID"
 
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-77}"
 
+check_orin_ssh() {
+    log_info "Checking SSH login to ORIN (you may be prompted for password)..."
+    if ssh -o ConnectTimeout=5 "$ORIN_SSH" "exit 0" >/dev/null 2>&1; then
+        log_success "SSH authentication to ORIN succeeded."
+    else
+        log_error "SSH authentication to ORIN failed."
+        exit 1
+    fi
+}
 
-print_color "$info" "[INFO] ROS_DOMAIN_ID=$ROS_DOMAIN_ID" >&2
-print_color "$info" "[INFO] Run name: $RUN_NAME" >&2
-print_color "$info" "[INFO] Run ID: $RUN_ID" >&2
-print_color "$info" "[INFO] Duration: ${CAPTURE_SECONDS}s" >&2
-print_color "$info" "[INFO] Orin: ${ORIN_USER}@${ORIN_HOST}" >&2
-print_color "$info" "[INFO] Teamings host arg: $TEAMINGS_HOST" >&2
-print_color "$info" "[INFO] Local machine: $(hostname)" >&2
+log_info "ROS_DOMAIN_ID=$ROS_DOMAIN_ID"
+log_info "Run name: $RUN_NAME"
+log_info "Run ID: $RUN_ID"
+log_info "Duration: ${CAPTURE_SECONDS}s"
+log_info "Orin: $ORIN_SSH"
+log_info "Local host arg: $LOCAL_HOST"
+log_info "Local machine: $(hostname)"
+log_info "RQT enabled: $RQT_FLAG"
 
-
-print_color "$info" "[INFO] Preparing local directory..." >&2
+log_info "Preparing local directory..."
 mkdir -p "$LOCAL_BASE_DIR"
 
+check_orin_ssh
 
-print_color "$info" "[INFO] Starting remote capture workflow on Orin..." >&2
-print_color "$info" "[INFO] Remote output will stream here." >&2
+log_info "Starting remote capture workflow on Orin..."
+log_info "Remote output will stream here."
 
-ssh "${ORIN_USER}@${ORIN_HOST}" "
+if ssh "$ORIN_SSH" "
 set -euo pipefail
 
 mkdir -p '$REMOTE_RUN_DIR'
@@ -109,6 +153,14 @@ for i in {1..30}; do
   sleep 1
 done
 
+if [ '$RQT_FLAG' = 'true' ]; then
+  echo '[REMOTE] Launching rqt_image_view...'
+  export DISPLAY=:0
+  ros2 run rqt_image_view rqt_image_view /zed/zed_node/rgb/color/rect/image \
+    > '$REMOTE_RUN_DIR/rqt_image_view.log' 2>&1 &
+  RQT_PID=\$!
+fi
+
 echo '[REMOTE] Recording for ${CAPTURE_SECONDS}s...'
 timeout --signal=INT ${CAPTURE_SECONDS} \
   ros2 bag record -o '$REMOTE_BAG_PREFIX' \
@@ -128,34 +180,52 @@ kill -INT \$ZED_PID || true
 sleep 2
 kill -TERM \$ZED_PID || true
 
+if [ '$RQT_FLAG' = 'true' ]; then
+  echo '[REMOTE] Stopping rqt_image_view...'
+  kill \$RQT_PID || true
+fi
+
+sleep 1
+
 echo '[REMOTE] Final run dir contents:'
 ls -lah '$REMOTE_RUN_DIR'
 find '$REMOTE_RUN_DIR' -maxdepth 2 -type f | sort
 
 echo '[REMOTE] Capture complete.'
-" >&2
-
-print_color "$info" "[INFO] Copying full run directory from Orin to local machine..." >&2
-
-rm -rf "$LOCAL_RUN_DIR"
-scp -r "${ORIN_USER}@${ORIN_HOST}:${REMOTE_RUN_DIR}" "$LOCAL_BASE_DIR/" >&2
-
-if [ ! -d "$LOCAL_RUN_DIR" ]; then
-    print_color "$danger" "[ERROR] Local run directory was not copied: $LOCAL_RUN_DIR" >&2
+" >&2; then
+    log_success "SSH commands on ORIN completed successfully."
+    log_success "Remote capture workflow completed."
+else
+    log_error "Remote capture workflow failed."
     exit 1
 fi
 
-print_color "$info" "[INFO] Local run directory contents:" >&2
+log_info "Copying full run directory from Orin to local machine..."
+
+rm -rf "$LOCAL_RUN_DIR"
+
+if scp -r "${ORIN_SSH}:${REMOTE_RUN_DIR}" "$LOCAL_BASE_DIR/" >&2; then
+    log_success "SCP copy from ORIN succeeded."
+else
+    log_error "SCP copy from ORIN failed."
+    exit 1
+fi
+
+if [ ! -d "$LOCAL_RUN_DIR" ]; then
+    log_error "Local run directory was not copied: $LOCAL_RUN_DIR"
+    exit 1
+fi
+
+log_info "Local run directory contents:"
 ls -lah "$LOCAL_RUN_DIR" >&2
 find "$LOCAL_RUN_DIR" -maxdepth 2 -type f | sort >&2
 
-
-print_color "$success" "" >&2
-print_color "$success" "===============================================" >&2
-print_color "$success" "             CAPTURE COMPLETE " >&2
-print_color "$success" "===============================================" >&2
-print_color "$success" "Saved locally:" >&2
-print_color "$success" "  $LOCAL_RUN_DIR" >&2
-print_color "$success" "" >&2
+log_success ""
+log_success "==============================================="
+log_success "             CAPTURE COMPLETE"
+log_success "==============================================="
+log_success "Saved locally:"
+log_success "  $LOCAL_RUN_DIR"
+log_success ""
 
 echo "$LOCAL_RUN_DIR"

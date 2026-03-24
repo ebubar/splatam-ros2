@@ -60,7 +60,7 @@ from scripts.splatam import (
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--config", default="./configs/zed/online_demo.py", type=str)
+    p.add_argument("--config", default="./configs/zed2i/zed2i_splat_live.py", type=str)
 
     # ---- Live Rendering Flags ----
     p.add_argument("--live_cam", action="store_true",
