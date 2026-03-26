@@ -5,7 +5,7 @@ base_dir = "./experiments/ZED2i_Captures"
 scene_name = "zed2i_ros2_demo"
 run_name = "SplaTAM_ZED2i_ROS2"
 
-num_frames = 30
+num_frames = 15
 
 
 # ALWAYS-ON LiveStream Recording 
@@ -78,33 +78,12 @@ config = dict(
     ),
 
     
-    # Tracking Settings
-    # tracking=dict(
-    #     use_gt_poses=False,
-    #     forward_prop=True,
-    #     visualize_tracking_loss=False,
-    #     num_iters=60,
-    #     use_sil_for_loss=True,
-    #     sil_thres=0.99,
-    #     use_l1=True,
-    #     use_depth_loss_thres=False,
-    #     depth_loss_thres=20000,
-    #     ignore_outlier_depth_loss=False,
-    #     loss_weights=dict(im=0.5, depth=1.0),
-    #     lrs=dict(
-    #         means3D=0.0,
-    #         rgb_colors=0.0,
-    #         unnorm_rotations=0.0,
-    #         logit_opacities=0.0,
-    #         log_scales=0.0,
-    #         cam_unnorm_rots=0.001,
-    #         cam_trans=0.004,
-    #     ),
+    #Tracking Settings
     tracking=dict(
         use_gt_poses=False,
         forward_prop=True,
         visualize_tracking_loss=False,
-        num_iters=80,
+        num_iters=50,
         use_sil_for_loss=True,
         sil_thres=0.99,
         use_l1=True,
@@ -125,23 +104,6 @@ config = dict(
 
     
     # Mapping Settings
-    # mapping=dict(
-    #     num_iters=60,
-    #     add_new_gaussians=False,
-    #     sil_thres=0.5,
-    #     use_l1=True,
-    #     ignore_outlier_depth_loss=False,
-    #     use_sil_for_loss=False,
-    #     loss_weights=dict(im=0.5, depth=1.0),
-    #     lrs=dict(
-    #         means3D=0.0001,
-    #         rgb_colors=0.0025,
-    #         unnorm_rotations=0.001,
-    #         logit_opacities=0.05,
-    #         log_scales=0.001,
-    #         cam_unnorm_rots=0.0,
-    #         cam_trans=0.0,
-    #     ),
     mapping=dict(
         num_iters=80,
         add_new_gaussians=True,
