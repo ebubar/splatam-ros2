@@ -27,6 +27,9 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
 
+from geometry_msgs.msg import PoseStamped
+from scipy.spatial.transform import Rotation as R
+from nav_msgs.msg import Path as P
 from sensor_msgs.msg import Image, CameraInfo
 
 from cv_bridge import CvBridge
@@ -40,6 +43,10 @@ from utils.recon_helpers import setup_camera
 from utils.keyframe_selection import keyframe_selection_overlap
 from utils.slam_external import build_rotation, prune_gaussians, densify
 from utils.live_renderer import LiveRenderer, LiveRendererConfig
+
+from sensor_msgs.msg import PointCloud2, PointField
+from sensor_msgs_py import point_cloud2
+from std_msgs.msg import Header
 
 from diff_gaussian_rasterization import GaussianRasterizer as Renderer
 from utils.slam_helpers import (
@@ -194,6 +201,11 @@ class ZedSplatamOnline(Node):
             depth=5,
         )
 
+        self.path_pub = self.create_publisher(P, "splatam/camera_path", 10)
+        self.path_msg = P()
+        self.path_msg.header.frame_id = "map"
+        self.get_logger().info("Create publisher /spat/camera_path")
+
         rgb_topic = self.cfg["ros"]["rgb_topic"]
         depth_topic = self.cfg["ros"]["depth_topic"]
         rgb_info_topic = self.cfg["ros"]["rgb_info_topic"]
@@ -201,10 +213,16 @@ class ZedSplatamOnline(Node):
 
         self.get_logger().info(f"Subscribing:\n  RGB: {rgb_topic}\n  DEPTH: {depth_topic}")
 
+        self.pose_pub = self.create_publisher(PoseStamped, "/splatam/current_pose", 10)
+        
+        self.cloud_pub = self.create_publisher(PointCloud2, "/splatam/gaussian_cloud", 10)
+        
+
         self.rgb_sub = Subscriber(self, Image, rgb_topic, qos_profile=qos)
         self.depth_sub = Subscriber(self, Image, depth_topic, qos_profile=qos)
         self.rgb_info_sub = Subscriber(self, CameraInfo, rgb_info_topic, qos_profile=qos)
         self.depth_info_sub = Subscriber(self, CameraInfo, depth_info_topic, qos_profile=qos)
+
 
         # Approx sync (ZED stamps are usually close; we’ll allow a little slop)
         self.ts = ApproximateTimeSynchronizer(
@@ -284,6 +302,70 @@ class ZedSplatamOnline(Node):
 
         self.get_logger().info("Ready. Waiting for synced frames...")
 
+
+    def publish_current_pose(self, w2c: torch.Tensor):
+
+        if w2c is None:
+            return
+        
+        c2w = torch.inverse(w2c).detach().cpu().numpy()
+
+        pose_msg = PoseStamped()
+        pose_msg.header.stamp = self.get_clock().now().to_msg()
+        pose_msg.header.frame_id = "map"
+
+
+        # position
+        pose_msg.pose.position.x = float(c2w[0, 3])
+        pose_msg.pose.position.y = float(c2w[1, 3])
+        pose_msg.pose.position.z = float(c2w[2, 3])
+
+        # orientation
+        rot = R.from_matrix(c2w[:3, :3])
+        quat_xyzw = rot.as_quat()
+        pose_msg.pose.orientation.x = float(quat_xyzw[0])
+        pose_msg.pose.orientation.y = float(quat_xyzw[1])
+        pose_msg.pose.orientation.z = float(quat_xyzw[2])
+        pose_msg.pose.orientation.w = float(quat_xyzw[3])
+
+        self.pose_pub.publish(pose_msg)
+
+        self.path_msg.header.stamp = pose_msg.header.stamp
+        self.path_msg.poses.append(pose_msg)
+        self.path_pub.publish(self.path_msg)
+
+    def publish_gaussian_cloud(self):
+        if self.params is None:
+            self.get_logger().warn("publish_gaussian_cloud: params is None")
+            return
+
+        pts = self.params["means3D"].detach().cpu().numpy()
+
+        if pts.shape[0] == 0:
+            self.get_logger().warn("publish_gaussian_cloud: no points in means3D")
+            return
+
+        # Downsample only if huge
+        max_points = 20000
+        if pts.shape[0] > max_points:
+            idx = np.random.choice(pts.shape[0], max_points, replace=False)
+            pts = pts[idx]
+
+        header = Header()
+        header.stamp = self.get_clock().now().to_msg()
+        header.frame_id = "map"
+
+        fields = [
+            PointField(name="x", offset=0, datatype=PointField.FLOAT32, count=1),
+            PointField(name="y", offset=4, datatype=PointField.FLOAT32, count=1),
+            PointField(name="z", offset=8, datatype=PointField.FLOAT32, count=1),
+        ]
+
+        cloud_points = [[float(p[0]), float(p[1]), float(p[2])] for p in pts]
+        cloud_msg = point_cloud2.create_cloud(header, fields, cloud_points)
+
+        self.get_logger().info(f"Publishing gaussian cloud with {len(cloud_points)} points")
+        self.cloud_pub.publish(cloud_msg)
 
     def _render_splat_preview(self, w2c: torch.Tensor, time_idx: int) -> np.ndarray:
         if self.intrinsics is None or self.params is None:
@@ -415,7 +497,6 @@ class ZedSplatamOnline(Node):
 
         if curr_w2c is None:
             curr_w2c = self.last_valid_w2c
-
 
         # --- Live previews (only if enabled) ---
         if self.cfg.get("live_cam", False) or self.record_cam:
@@ -747,6 +828,11 @@ class ZedSplatamOnline(Node):
             if preview_bgr is not None:
                 self.live.update_splat_preview(preview_bgr)
 
+        if curr_w2c is not None:
+            self.publish_current_pose(curr_w2c)
+
+        if self.params is not None:
+            self.publish_gaussian_cloud()
         # increment + print  (ALWAYS)
         self.total_frames += 1
         self.get_logger().info(

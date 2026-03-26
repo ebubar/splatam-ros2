@@ -5,7 +5,7 @@ base_dir = "./experiments/ZED2i_Captures"
 scene_name = "zed2i_ros2_demo"
 run_name = "SplaTAM_ZED2i_ROS2"
 
-num_frames = 15
+num_frames = 100
 
 
 # ALWAYS-ON LiveStream Recording 
@@ -105,7 +105,7 @@ config = dict(
     
     # Mapping Settings
     mapping=dict(
-        num_iters=80,
+        num_iters=60,
         add_new_gaussians=True,
         sil_thres=0.5,
         use_l1=True,
