@@ -1,0 +1,36 @@
+services:
+  thor:
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile.thor
+      network: host
+    container_name: thor
+    network_mode: host
+    ipc: host
+    runtime: nvidia
+    privileged: true
+    stdin_open: true
+    tty: true
+    working_dir: /SplaTAM
+    volumes:
+      - ../..:/SplaTAM
+      - ./params:/ros2_ws/src/zed-ros2-wrapper/zed_wrapper/params
+      - ./zed_ai:/usr/local/zed/resources
+      - /dev/shm:/dev/shm
+      - /tmp:/tmp
+      - /var/nvidia/nvcam/settings:/var/nvidia/nvcam/settings
+      - /etc/systemd/system/zed_x_daemon.service:/etc/systemd/system/zed_x_daemon.service
+      - ${RUN_DIR:-/tmp/thor_run}:/run_config
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    environment:
+      DISPLAY: ${DISPLAY}
+      QT_QPA_PLATFORM: ${QT_QPA_PLATFORM:-xcb}
+      LIBGL_ALWAYS_SOFTWARE: 1
+      CAMERA_MODEL: ${CAMERA_MODEL:-zed2i}
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-77}
+      RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
+      ROS_LOCALHOST_ONLY: 0
+      NO_VIEWER: ${NO_VIEWER:-0}
+      THOR_INSIDE_CONTAINER: "1"
+    command: >
+      bash -lc "bash ./bash_scripts/main_thor.bash"

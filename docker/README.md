@@ -1,90 +1,137 @@
-# SplaTAM Docker (reproducible GPU setup)
+<h1 align="center">
+Docker Images for ZED Camera
+</h1>
 
-This repo includes a **clean, reproducible** Docker workflow for running SplaTAM with:
-- CUDA 12.1 base image
-- Python 3.10 in a dedicated venv at `/opt/venv`
-- PyTorch CUDA wheels (cu121)
-- `diff-gaussian-rasterization-w-depth` built inside the image
-- `numpy<2` (SplaTAM uses `np.unicode_` which was removed in NumPy 2.x)
-- OpenCV + Open3D for visualization scripts
+The repository contains a GitHub Actions workflow for auto-deployment of built Docker images to [husarion/zed-desktop](https://hub.docker.com/r/husarion/zed-desktop), [husarion/zed-desktop-cpu](https://hub.docker.com/r/husarion/zed-desktop-cpu) and [husarion/zed-jetson](https://hub.docker.com/r/husarion/zed-jetson) Docker Hub repositories. This process is based on [zed-ros2-wrapper](https://github.com/stereolabs/zed-ros2-wrapper) repository.
 
-## Prereqs on host
-- NVIDIA driver + working `nvidia-smi`
-- Docker + NVIDIA Container Toolkit installed (`docker run --gpus all ... nvidia-smi` works)
-- Optional for visualization: X server available and `$DISPLAY` set
+[![ROS Docker Image](https://github.com/husarion/zed-docker/actions/workflows/ros-docker-image.yaml/badge.svg)](https://github.com/husarion/zed-docker/actions/workflows/ros-docker-image.yaml)
 
-## Files
-- `docker/Dockerfile` — builds the runtime image
-- `docker/run.sh` — runs the container with GPU + optional X forwarding
+## Available Docker Images
 
-## Build
-From repo root:
-```bash
-docker build -t splatam-clean:cu121 -f docker/Dockerfile .
+**ROS1:**
 
-## For a clean rebuild
-docker build --no-cache -t splatam-clean:cu121 -f docker/Dockerfile .
+- **`husarion/zed-desktop:noetic`** for desktop platform with CUDA (tested on platform with 11.7).
+- **`husarion/zed-desktop-cpu:noetic`** a simple demo version on the CPU, allowing you to check if the camera and IMU are working properly. Image dedicated to platforms with amd64 and arm64 architecture.
+- **`husarion/zed-jetson:noetic`** for Jetson platform currently support - **Jetson Xavier, Orin AGX/NX/Nano, CUDA 11.4** (tested on Xavier AGX).
+- **`husarion/zed-jetson:melodic`** for Jetson platform currently not supported - **Jetson Nano, TX2/TX2 NX, CUDA 10.2** (tested on Nano).
 
-## CUDA arch note
+**ROS2:**
 
-Docker builds typically run without a visible GPU, so CUDA arch auto-detection can fail for CUDA extensions.
-This image pins:
+- **`husarion/zed-desktop:humble`** for desktop platform with CUDA (tested on platform with 11.7).
+- **`husarion/zed-desktop-cpu:humble`** a simple demo version on the CPU, allowing you to check if the camera and IMU are working properly. Image dedicated to platforms with amd64 and arm64 architecture.
+- **`husarion/zed-jetson:foxy`** for Jetson platform currently support - **Jetson Xavier, Orin AGX/NX/Nano, CUDA 11.4** (tested on Xavier AGX).
 
-TORCH_CUDA_ARCH_LIST=8.9 (Ada / RTX 4000 Ada)
+## Prepare Environment
 
-Override if needed:
+**1. Plugin the Device**
 
-docker build \
-  --build-arg TORCH_CUDA_ARCH_LIST="8.6" \
-  -t splatam-clean:cu121 -f docker/Dockerfile .
+For best performance please use **USB 3.0** port, depend of the camera model. Then use `lsusb` command to check if the device is visible.
 
-Run
+> [!IMPORTANT]
+> To use the ZED X camera, you'll need to install the ZED X Driver additionally. Follow the official tutorial [Setting up ZED X on Orin Nano / NX Developer Kits](https://www.stereolabs.com/docs/get-started-with-zed-x/jetson-orin-devkit-setup/) provided by Stereolabs for detailed instructions.
 
-From repo root:
+## Demo GPU
 
-./docker/run.sh
-
-
-This mounts the repo into the container at /SplaTAM.
-
-Sanity checks (inside container)
-python -c "import torch; print('cuda avail:', torch.cuda.is_available(), 'torch cuda:', torch.version.cuda)"
-python -c "import diff_gaussian_rasterization; print('rasterizer ok')"
-python -c "import cv2; print('cv2 ok')"
-python -c "import open3d as o3d; print('open3d', o3d.__version__)"
-
-Container GPU diagnostic script
---------------------------------
-We've added a small helper script `scripts/check_gpu.sh` you can run inside the container to print useful GPU diagnostics (nvidia-smi, torch CUDA availability, /dev nodes, nvcc if present).
-
-Usage (after launching the container):
+**1. Clone the repository**
 
 ```bash
-# inside the running container
-bash scripts/check_gpu.sh
+git clone https://github.com/husarion/zed-docker.git
+cd zed-docker/demo
 ```
 
-Host-side quick diagnostics
----------------------------
-If the container cannot see the GPU, run these on the host to narrow the problem:
+**2. Select Appropriate Docker Image**
 
 ```bash
-# modern Docker + NVIDIA Container Toolkit
-docker run --rm --gpus all nvidia/cuda:12.1.1-base-ubuntu22.04 nvidia-smi
-
-# legacy runtime (nvidia-docker2)
-docker run --rm --runtime=nvidia nvidia/cuda:12.1.1-base-ubuntu22.04 nvidia-smi
-
-# check device nodes
-ls -l /dev | grep nvidia || true
-
-# docker info (look for runtimes and GPU support)
-docker info
+export ZED_IMAGE=<zed_image>
 ```
 
-Dataset download scripts
+Replace `<zed_image>` with appropriate Docker image from below table.
 
-The image includes wget and unzip, so the repo scripts should work:
+<div style="display: flex; justify-content: center;">
 
-bash bash_scripts/download_tum.sh
-bash bash_scripts/download_replica.sh
+| **Docker Image**                   |
+| ---------------------------------- |
+| husarion/zed-jetson:foxy           |
+| husarion/zed-desktop:humble        |
+
+</div>
+
+**3. Select the appropriate camera model**
+
+```bash
+export CAMERA_MODEL=<camera_model>
+```
+
+Replace `<camera_model>` with appropriate camera model from below table.
+
+<div style="display: flex; justify-content: center;">
+
+| **Product Name**  | **Camera Model** |
+| ----------------- | ---------------- |
+| ZED               | zed              |
+| ZED Mini          | zedm             |
+| ZED 2             | zed2             |
+| ZED 2i            | zed2i            |
+| ZED X             | zedx             |
+| ZED X Mini        | zedxm            |
+
+</div>
+
+**4. Activate the Device**
+
+```bash
+docker compose up zed
+```
+
+> [!NOTE]
+> You can run the visualization on any device, provided that it is connected to the computer to which the sensor is connected.
+
+**5. Launch Visualization**
+
+```bash
+xhost local:root
+docker compose up rviz
+```
+
+> [!NOTE]
+> First run of **ROS 2** Docker images downloads configuration files and optimize camera. This may take several minutes.
+
+**6. Configure RViz.**
+
+Add following topic to RViz:
+
+- RGB image topic: `/<camera_model>/zed_node/rgb/image_rect_color`
+- Point cloud topic: `/<camera_model>/zed_node/point_cloud/cloud_registered`
+
+## Demo CPU
+
+**1. Clone the repository**
+
+```bash
+git clone https://github.com/husarion/zed-docker.git
+cd zed-docker/demo
+```
+
+**2. Activate the Device**
+
+```bash
+docker compose -f dompose-cpu.yaml up
+```
+
+**3. Launch Visualization**
+
+```bash
+xhost local:root
+docker compose up rviz
+```
+
+> [!NOTE]
+> First run of **ROS 2** Docker images downloads configuration files and optimize camera. This may take several minutes.
+
+## Additional details
+
+Docker Compose volume `- /tmp/argus_socket:/tmp/argus_socket` is only necessary for ZED X camera.
+
+## Known issue
+
+Docker Buildkit doesn't support build image with Nvidia runtime, so there is dedicated action for pushing locally building image from Jetson.

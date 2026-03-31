@@ -47,13 +47,23 @@ fi
 
 echo "Launching container ${IMG}..."
 
+#docker run --rm -it \
+#  "${GPU_RUN_ARGS[@]}" \
+#  --ipc=host \
+#  --shm-size=16g \
+#  --network host \
+#  -e DISPLAY=$DISPLAY \
+#  -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
+#  -v "$(pwd)":/SplaTAM \
+#  -w /SplaTAM \
+#  ${IMG} bash
 docker run --rm -it \
   "${GPU_RUN_ARGS[@]}" \
   --ipc=host \
   --shm-size=16g \
   --network host \
-  -e DISPLAY=$DISPLAY \
+  -e DISPLAY="$DISPLAY" \
   -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
   -v "$(pwd)":/SplaTAM \
   -w /SplaTAM \
-  ${IMG} bash
+  "$IMG" bash

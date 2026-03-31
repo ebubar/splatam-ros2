@@ -1,50 +1,76 @@
-FROM nvidia/cuda:12.1.1-devel-ubuntu22.04
+FROM nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# System deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3.10 python3.10-venv python3.10-dev python3-pip \
-    git ca-certificates curl wget unzip \
-    cmake ninja-build build-essential pkg-config \
-    gcc-11 g++-11 \
-    libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 libgomp1 \
-  && rm -rf /var/lib/apt/lists/*
+    python3 \
+    python3-pip \
+    python3-venv \
+    python3-dev \
+    git \
+    build-essential \
+    cmake \
+    pkg-config \
+    curl \
+    ca-certificates \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN update-alternatives --install /usr/bin/python  python  /usr/bin/python3.10 10 && \
-    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 10
+# Python venv
+RUN python3 -m venv /opt/venv
+ENV PATH=/opt/venv/bin:$PATH
 
-ENV CC=gcc-11
-ENV CXX=g++-11
+RUN python -m pip install --upgrade pip setuptools wheel
 
-ENV VIRTUAL_ENV=/opt/venv
-RUN python -m venv ${VIRTUAL_ENV}
-ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
+# -------------------------------------------------------------------
+# Install Cyclone DDS first so python cyclonedds can build on aarch64
+# -------------------------------------------------------------------
+RUN git clone --branch releases/0.10.x https://github.com/eclipse-cyclonedds/cyclonedds /tmp/cyclonedds && \
+    mkdir -p /tmp/cyclonedds/build && \
+    cd /tmp/cyclonedds/build && \
+    cmake .. -DCMAKE_INSTALL_PREFIX=/opt/cyclonedds && \
+    cmake --build . --target install -j"$(nproc)" && \
+    rm -rf /tmp/cyclonedds
 
-ENV PIP_NO_BUILD_ISOLATION=1
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-ENV PIP_ROOT_USER_ACTION=ignore
+ENV CYCLONEDDS_HOME=/opt/cyclonedds
+ENV CMAKE_PREFIX_PATH=/opt/cyclonedds:${CMAKE_PREFIX_PATH:-}
+ENV LD_LIBRARY_PATH=/opt/cyclonedds/lib:${LD_LIBRARY_PATH:-}
 
-RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel
-
+# Work in repo root inside container
 WORKDIR /SplaTAM
 
+# Copy repo into image before any local path installs
+COPY . /SplaTAM
+
+# Python packages
 RUN python -m pip install --no-cache-dir \
-    torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+    "numpy<2" \
+    opencv-python \
+    open3d==0.16.0 \
+    tqdm==4.65.0 \
+    Pillow \
+    imageio \
+    matplotlib \
+    kornia \
+    natsort \
+    pyyaml \
+    wandb \
+    lpips \
+    torchmetrics \
+    cyclonedds==0.10.5 \
+    pytorch-msssim \
+    plyfile==0.8.1
 
-RUN python -m pip install --no-cache-dir \
-  "numpy<2" \
-  opencv-python \
-  open3d==0.16.0 \
-  tqdm==4.65.0 Pillow imageio matplotlib kornia natsort pyyaml wandb lpips torchmetrics \
-  cyclonedds pytorch-msssim plyfile==0.8.1
-
-ARG TORCH_CUDA_ARCH_LIST=8.9
-ENV TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST}
-
+# Install local rasterizer package
+#RUN python -m pip install --no-cache-dir --no-build-isolation \
+#    /SplaTAM/third_party/diff-gaussian-rasterization
 RUN python -m pip install --no-cache-dir --no-build-isolation \
   ./third_party/diff-gaussian-rasterization
 
-RUN python -c "import torch, numpy as np, cv2, diff_gaussian_rasterization; \
-print('torch', torch.__version__, 'cuda', torch.version.cuda); \
-print('numpy', np.__version__); print('cv2', cv2.__version__); print('rasterizer ok')"
+CMD ["/bin/bash"]
