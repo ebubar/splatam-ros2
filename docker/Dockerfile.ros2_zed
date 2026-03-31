@@ -1,0 +1,151 @@
+#REFERENCE: https://github.com/athackst/dockerfiles/blob/main/ros2/jazzy.Dockerfile
+
+##############################################
+# Created from template ros2.dockerfile.jinja
+##############################################
+
+FROM ubuntu:24.04 AS base
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  locales \
+  && locale-gen en_US.UTF-8 \
+  && update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 \
+  && rm -rf /var/lib/apt/lists/*
+ENV LANG=en_US.UTF-8
+
+RUN ln -fs /usr/share/zoneinfo/UTC /etc/localtime \
+  && export DEBIAN_FRONTEND=noninteractive \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends tzdata \
+  && dpkg-reconfigure --frontend noninteractive tzdata \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN apt-get update && apt-get -y upgrade \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    gnupg2 \
+    lsb-release \
+    sudo \
+    software-properties-common \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -L -s -o /tmp/ros2-apt-source.deb https://github.com/ros-infrastructure/ros-apt-source/releases/download/1.1.0/ros2-apt-source_1.1.0.$(lsb_release -cs)_all.deb \
+    && apt-get update \
+    && apt-get install /tmp/ros2-apt-source.deb \
+    && rm -f /tmp/ros2-apt-source.deb \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV ROS_DISTRO=jazzy
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ros-jazzy-ros-base \
+    python3-argcomplete \
+    python3-rosdep \
+  && rm -rf /var/lib/apt/lists/*
+
+ARG USERNAME=ros
+ARG USER_UID=1000
+ARG USER_GID=$USER_UID
+
+RUN if getent passwd ubuntu > /dev/null 2>&1; then \
+        userdel -r ubuntu && \
+        echo "Deleted existing ubuntu user"; \
+    fi && \
+    groupadd --gid $USER_GID $USERNAME && \
+    useradd -s /bin/bash --uid $USER_UID --gid $USER_GID -m $USERNAME && \
+    echo "Created new user $USERNAME"
+
+RUN apt-get update && apt-get install -y sudo \
+  && echo $USERNAME ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/$USERNAME \
+  && chmod 0440 /etc/sudoers.d/$USERNAME \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN apt-get update && apt-get install -y --no-install-recommends git-core bash-completion \
+  && echo "if [ -f /opt/ros/${ROS_DISTRO}/setup.bash ]; then source /opt/ros/${ROS_DISTRO}/setup.bash; fi" >> /home/$USERNAME/.bashrc \
+  && echo "if [ -f /usr/share/colcon_argcomplete/hook/colcon-argcomplete.bash ]; then source /usr/share/colcon_argcomplete/hook/colcon-argcomplete.bash; fi" >> /home/$USERNAME/.bashrc \
+  && rm -rf /var/lib/apt/lists/*
+ENV DEBIAN_FRONTEND=
+
+COPY ./docker/ros_entrypoint.sh /ros_entrypoint.sh
+ENTRYPOINT ["/ros_entrypoint.sh"]
+CMD ["bash"]
+
+FROM base AS dev
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  bash-completion \
+  build-essential \
+  cmake \
+  gdb \
+  git \
+  openssh-client \
+  python3-argcomplete \
+  python3-pip \
+  ros-dev-tools \
+  ros-jazzy-ament-* \
+  vim \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN rosdep init || echo "rosdep already initialized"
+
+ENV DEBIAN_FRONTEND=
+ENV AMENT_CPPCHECK_ALLOW_SLOW_VERSIONS=1
+
+FROM dev AS zed_ros2
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# ZED + ROS deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  usbutils \
+  udev \
+  nlohmann-json3-dev \
+  ros-jazzy-image-transport \
+  ros-jazzy-image-transport-plugins \
+  ros-jazzy-compressed-image-transport \
+  ros-jazzy-compressed-depth-image-transport \
+  ros-jazzy-theora-image-transport \
+  ros-jazzy-diagnostic-updater \
+  ros-jazzy-xacro \
+  ros-jazzy-robot-localization \
+  ros-jazzy-tf2-sensor-msgs \
+  ros-jazzy-geographic-msgs \
+  ros-jazzy-nmea-msgs \
+  ros-jazzy-backward-ros \
+  ros-jazzy-point-cloud-transport \
+  ros-jazzy-point-cloud-transport-plugins \
+  ros-jazzy-cob-srvs \
+  ros-jazzy-cob-msgs \
+  libopenblas-dev \
+  liblapack-dev \
+  libusb-1.0-0-dev \
+  libturbojpeg0-dev \
+  libgles2 \
+  libgles2-mesa-dev \
+  libgl1-mesa-dev \
+  libegl1-mesa-dev \
+  && rm -rf /var/lib/apt/lists/*
+
+
+# Clone repos
+WORKDIR /ros2_ws/src
+RUN git clone https://github.com/stereolabs/zed-ros2-wrapper.git && \
+    git clone https://github.com/stereolabs/zed-ros2-interfaces.git && \
+    git clone https://github.com/stereolabs/zed-ros2-description.git
+
+# Build workspace (ONLY ONCE, CORRECT DIR)
+WORKDIR /ros2_ws
+
+# Setup environment
+RUN echo 'source /opt/ros/jazzy/setup.bash' >> /home/$USERNAME/.bashrc && \
+    echo 'source /ros2_ws/install/setup.bash' >> /home/$USERNAME/.bashrc && \
+    echo 'export LD_LIBRARY_PATH=/usr/local/zed/lib:${LD_LIBRARY_PATH}' >> /home/$USERNAME/.bashrc
+
+WORKDIR /workspace
+CMD ["bash"]

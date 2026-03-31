@@ -1,36 +1,89 @@
+name: splatam-stack
+
 services:
-  thor:
+  zed_ros2:
     build:
       context: ../..
-      dockerfile: docker/Dockerfile.thor
-      network: host
-    container_name: thor
-    network_mode: host
-    ipc: host
-    runtime: nvidia
-    privileged: true
+      dockerfile: docker/Dockerfile.ros2_zed
+    image: splatam-zed-ros2:latest
+    container_name: splatam-zed-ros2
     stdin_open: true
     tty: true
-    working_dir: /SplaTAM
-    volumes:
-      - ../..:/SplaTAM
-      - ./params:/ros2_ws/src/zed-ros2-wrapper/zed_wrapper/params
-      - ./zed_ai:/usr/local/zed/resources
-      - /dev/shm:/dev/shm
-      - /tmp:/tmp
-      - /var/nvidia/nvcam/settings:/var/nvidia/nvcam/settings
-      - /etc/systemd/system/zed_x_daemon.service:/etc/systemd/system/zed_x_daemon.service
-      - ${RUN_DIR:-/tmp/thor_run}:/run_config
-      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+    privileged: true
+    runtime: nvidia
+    network_mode: host
+    ipc: host
+    pid: host
+    working_dir: /workspace
     environment:
-      DISPLAY: ${DISPLAY}
-      QT_QPA_PLATFORM: ${QT_QPA_PLATFORM:-xcb}
-      LIBGL_ALWAYS_SOFTWARE: 1
-      CAMERA_MODEL: ${CAMERA_MODEL:-zed2i}
-      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-77}
-      RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
-      ROS_LOCALHOST_ONLY: 0
-      NO_VIEWER: ${NO_VIEWER:-0}
-      THOR_INSIDE_CONTAINER: "1"
+      DISPLAY: "${DISPLAY:-:0}"
+      QT_QPA_PLATFORM: "${QT_QPA_PLATFORM:-xcb}"
+      ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:-77}"
+      RMW_IMPLEMENTATION: "${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"
+      ROS_LOCALHOST_ONLY: "0"
+      CAMERA_MODEL: "${CAMERA_MODEL:-zed2i}"
+      NVIDIA_DRIVER_CAPABILITIES: "all"
+      NVIDIA_VISIBLE_DEVICES: "all"
+      LD_LIBRARY_PATH: "/usr/local/zed/lib:${LD_LIBRARY_PATH}"
+      CUDA_TOOLKIT_ROOT_DIR: "/usr/local/cuda"
+      CUDA_HOME: "/usr/local/cuda"
+    volumes:
+      - /usr/local/cuda:/usr/local/cuda
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - /tmp:/tmp
+      - /dev:/dev
+      - /usr/local/zed:/usr/local/zed
+      - ../..:/workspace
+
     command: >
-      bash -lc "bash ./bash_scripts/main_thor.bash"
+      bash -lc "
+      source /opt/ros/jazzy/setup.bash &&
+      export LD_LIBRARY_PATH=/usr/local/zed/lib:${LD_LIBRARY_PATH} &&
+      export ZED_DIR=/usr/local/zed &&
+      cd /ros2_ws &&
+      rosdep update &&
+      rosdep install --from-paths src --ignore-src -r -y --skip-keys='zed_msgs zed_description rviz2' &&
+      colcon build --symlink-install --cmake-args=-DCMAKE_BUILD_TYPE=Release &&
+      source /ros2_ws/install/setup.bash &&
+      echo '[INFO] Starting ZED wrapper...' &&
+      ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zed2i
+      "
+
+  splatam:
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile.splatam
+    image: splatam-thor:latest
+    container_name: splatam-thor
+    stdin_open: true
+    tty: true
+    privileged: true
+    runtime: nvidia
+    network_mode: host
+    ipc: host
+    pid: host
+    working_dir: /SplaTAM
+    environment:
+      DISPLAY: "${DISPLAY:-:0}"
+      QT_QPA_PLATFORM: "${QT_QPA_PLATFORM:-xcb}"
+      ROS_DOMAIN_ID: "${ROS_DOMAIN_ID:-77}"
+      RMW_IMPLEMENTATION: "${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"
+      ROS_LOCALHOST_ONLY: "0"
+      NO_VIEWER: "${NO_VIEWER:-0}"
+      NVIDIA_DRIVER_CAPABILITIES: "all"
+      NVIDIA_VISIBLE_DEVICES: "all"
+      LD_LIBRARY_PATH: "/usr/local/zed/lib:${LD_LIBRARY_PATH}"
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - /tmp:/tmp
+      - /dev:/dev
+      - /usr/local/zed:/usr/local/zed
+      - ../..:/SplaTAM
+    depends_on:
+      - zed_ros2
+    command: >
+      bash -lc "
+      echo '[INFO] Waiting for ZED topics...' &&
+      sleep 8 &&
+      bash bash_scripts/splat_pipeline_thor.bash
+      "
