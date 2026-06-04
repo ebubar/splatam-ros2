@@ -1,3 +1,6 @@
+import os
+from os.path import join as p_join
+
 primary_device = "cuda:0"
 seed = 0
 
@@ -5,10 +8,16 @@ base_dir = "./experiments/ZED2i_Captures"
 scene_name = "zed2i_ros2_demo"
 run_name = "SplaTAM_ZED2i_ROS2"
 
-num_frames = 15
+num_frames = 50
+overwrite = True
 
+# ZED working resolution
+full_res_width = 640
+full_res_height = 360
+downscale_factor = 1.0
+densify_downscale_factor = 1.0
 
-# ALWAYS-ON LiveStream Recording 
+# Recording
 live_stream_dir = "experiments/ZED2i_Live/zedTest/LiveStream"
 mp4_dir = "experiments/mp4"
 record_cam = True
@@ -16,135 +25,148 @@ record_depth = True
 record_splat = True
 record_fps = 30.0
 
-
 # ROS Topics
-
 zed_rgb_topic = "/zed/zed_node/rgb/color/rect/image"
-# zed_rgb_topic = "/zed/zed_node/rgb/color/rect/image/compressed"
-
 zed_rgb_info_topic = "/zed/zed_node/rgb/color/rect/image/camera_info"
 
 zed_depth_topic = "/zed/zed_node/depth/depth_registered"
-# zed_depth_topic = "/zed/zed_node/depth/depth_registered/compressed"
-
 zed_depth_info_topic = "/zed/zed_node/depth/depth_registered/camera_info"
 
 use_odom = True
 zed_odom_topic = "/zed/zed_node/odom"
 
-# Encodings (MATCH YOUR ros2 echo)
-zed_rgb_encoding = "bgra8"
+# Encodings
+zed_rgb_encoding = "bgr8"
 zed_depth_encoding = "32FC1"
 
+map_every = 1
+
+if num_frames < 25:
+    keyframe_every = max(1, int(num_frames // 5))
+else:
+    keyframe_every = 2
+
+mapping_window_size = 32
+tracking_iters = 30
+mapping_iters = 60
 
 config = dict(
-    
-    # Run / Output
     workdir=f"{base_dir}/{scene_name}",
     run_name=run_name,
-    overwrite=True,
+    overwrite=overwrite,
+
     num_frames=num_frames,
+    seed=seed,
+    primary_device=primary_device,
+
     save_stream_frames=True,
 
-    
-    # Always-On LiveStream Recording
-    live_stream_dir=live_stream_dir,  
-    mp4_dir=mp4_dir,      
+    live_stream_dir=live_stream_dir,
+    mp4_dir=mp4_dir,
     record_cam=record_cam,
     record_depth=record_depth,
     record_splat=record_splat,
     record_fps=record_fps,
 
-    
-    # Core SLAM Settings
-    map_every=1,
-    keyframe_every=5,
-    mapping_window_size=32,
+    map_every=map_every,
+    keyframe_every=keyframe_every,
+    mapping_window_size=mapping_window_size,
+    report_global_progress_every=100,
+    eval_every=1,
+
     scene_radius_depth_ratio=3,
     mean_sq_dist_method="projective",
     gaussian_distribution="isotropic",
-    primary_device=primary_device,
-    seed=seed,
 
-    
-    # Image Data Settings
+    report_iter_progress=False,
+    load_checkpoint=False,
+    checkpoint_time_idx=130,
+    save_checkpoints=False,
+    checkpoint_interval=5,
+    use_wandb=False,
+
     data=dict(
-        desired_image_width=640,
-        desired_image_height=360,
-        densification_image_width=320,
-        densification_image_height=180,
-        downscale_factor=1.0,
-        densify_downscale_factor=2.0,
+        desired_image_height=int(full_res_height // downscale_factor),
+        desired_image_width=int(full_res_width // downscale_factor),
+        densification_image_height=int(full_res_height // densify_downscale_factor),
+        densification_image_width=int(full_res_width // densify_downscale_factor),
+        downscale_factor=downscale_factor,
+        densify_downscale_factor=densify_downscale_factor,
     ),
 
-    
-    #Tracking Settings
+    # Hybrid mode:
+    # ZED odom initializes each pose in the script.
+    # SplaTAM then refines that pose locally.
     tracking=dict(
         use_gt_poses=False,
-        forward_prop=True,
+        forward_prop=False,
         visualize_tracking_loss=False,
-        num_iters=50,
+        num_iters=tracking_iters,
+
         use_sil_for_loss=True,
         sil_thres=0.99,
         use_l1=True,
-        use_depth_loss_thres=False,
+        use_depth_loss_thres=True,
         depth_loss_thres=20000,
         ignore_outlier_depth_loss=False,
-        loss_weights=dict(im=0.5, depth=1.0),
+        use_uncertainty_for_loss_mask=False,
+        use_uncertainty_for_loss=False,
+        use_chamfer=False,
+
+        loss_weights=dict(
+            im=0.1,
+            depth=3.0,
+        ),
+
         lrs=dict(
             means3D=0.0,
             rgb_colors=0.0,
             unnorm_rotations=0.0,
             logit_opacities=0.0,
             log_scales=0.0,
-            cam_unnorm_rots=0.0005,
-            cam_trans=0.002,
+            cam_unnorm_rots=0.00015,
+            cam_trans=0.0005,
         ),
     ),
 
-    
-    # Mapping Settings
     mapping=dict(
-        num_iters=80,
+        num_iters=mapping_iters,
         add_new_gaussians=True,
         sil_thres=0.5,
         use_l1=True,
         ignore_outlier_depth_loss=False,
         use_sil_for_loss=False,
-        loss_weights=dict(im=0.5, depth=1.0),
+        use_uncertainty_for_loss_mask=False,
+        use_uncertainty_for_loss=False,
+        use_chamfer=False,
+
+        loss_weights=dict(
+            im=0.5,
+            depth=1.0,
+        ),
+
         lrs=dict(
             means3D=0.0001,
             rgb_colors=0.0025,
             unnorm_rotations=0.001,
-            logit_opacities=0.03,
-            log_scales=0.0005,
+            logit_opacities=0.02,
+            log_scales=0.0003,
             cam_unnorm_rots=0.0,
             cam_trans=0.0,
         ),
-        # prune_gaussians=True,
-        # pruning_dict=dict(
-        #     start_after=0,
-        #     remove_big_after=0,
-        #     stop_after=20,
-        #     prune_every=20,
-        #     removal_opacity_threshold=0.005,
-        #     final_removal_opacity_threshold=0.005,
-        #     reset_opacities=False,
-        #     reset_opacities_every=500,
-        # ),
-        # use_gaussian_splatting_densification=False,
 
         prune_gaussians=True,
         pruning_dict=dict(
-            start_after=40,
-            remove_big_after=80,
-            stop_after=400,
-            prune_every=20,
-            removal_opacity_threshold=0.003,
-            final_removal_opacity_threshold=0.003,
+            start_after=30,
+            remove_big_after=60,
+            stop_after=200,
+            prune_every=30,
+            removal_opacity_threshold=0.001,
+            final_removal_opacity_threshold=0.001,
             reset_opacities=False,
             reset_opacities_every=500,
         ),
+
         use_gaussian_splatting_densification=False,
         densify_dict=dict(
             start_after=500,
@@ -159,8 +181,6 @@ config = dict(
         ),
     ),
 
-    
-    # ROS Interface
     ros=dict(
         rgb_topic=zed_rgb_topic,
         rgb_info_topic=zed_rgb_info_topic,
@@ -175,21 +195,23 @@ config = dict(
 
         rgb_is_bgr=True,
         depth_unit_scale_m=1.0,
+
+        min_depth_m=0.5,
+        max_depth_m=5.0,
+        process_every_n=1,
     ),
 
-    
-    # Visualization
     viz=dict(
-        viz_w=640,
-        viz_h=360,
-        viz_near=0.01,
-        viz_far=50.0,
-        viz_fps=5, 
-        view_scale=1.0,
-        render_mode="rgb",  # rgb | depth | centers
+        render_mode="color",
+        offset_first_viz_cam=True,
         show_sil=False,
-        visualize_cams=False,
-        offset_first_viz_cam=False,
-
+        visualize_cams=True,
+        viz_w=600,
+        viz_h=340,
+        viz_near=0.01,
+        viz_far=100.0,
+        view_scale=2,
+        viz_fps=5,
+        enter_interactive_post_online=False,
     ),
 )
