@@ -87,7 +87,7 @@ MANIFEST
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
-
+zed2i_splat_live.py.orig
 # Unit test / coverage reports
 htmlcov/
 .tox/
