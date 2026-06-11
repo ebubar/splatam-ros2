@@ -8,7 +8,7 @@ base_dir = "./experiments/ZED2i_Captures"
 scene_name = "zed2i_ros2_demo"
 run_name = "SplaTAM_ZED2i_ROS2"
 
-num_frames = 50
+num_frames = 45
 overwrite = True
 
 # ZED working resolution
@@ -18,7 +18,7 @@ downscale_factor = 1.0
 densify_downscale_factor = 1.0
 
 # Recording
-live_stream_dir = "experiments/ZED2i_Live/zedTest/LiveStream"
+live_stream_dir = "experiments/ZED2i_Live/zeros2 bag info zed2i_splatam_tf_bag/dTest/LiveStream"
 mp4_dir = "experiments/mp4"
 record_cam = True
 record_depth = True
@@ -39,16 +39,16 @@ zed_odom_topic = "/zed/zed_node/odom"
 zed_rgb_encoding = "bgr8"
 zed_depth_encoding = "32FC1"
 
-map_every = 1
+map_every = 10
 
 if num_frames < 25:
     keyframe_every = max(1, int(num_frames // 5))
 else:
-    keyframe_every = 2
+    keyframe_every = 1
 
 mapping_window_size = 32
 tracking_iters = 30
-mapping_iters = 60
+mapping_iters = 180
 
 config = dict(
     workdir=f"{base_dir}/{scene_name}",
@@ -114,8 +114,8 @@ config = dict(
         use_chamfer=False,
 
         loss_weights=dict(
-            im=0.1,
-            depth=3.0,
+            im=0.02,
+            depth=5.0,
         ),
 
         lrs=dict(
@@ -124,15 +124,15 @@ config = dict(
             unnorm_rotations=0.0,
             logit_opacities=0.0,
             log_scales=0.0,
-            cam_unnorm_rots=0.00015,
-            cam_trans=0.0005,
+            cam_unnorm_rots=0.00005,
+            cam_trans=0.0001,
         ),
     ),
 
     mapping=dict(
-        num_iters=mapping_iters,
+        num_iters=180,
         add_new_gaussians=True,
-        sil_thres=0.5,
+        sil_thres=0.45,
         use_l1=True,
         ignore_outlier_depth_loss=False,
         use_sil_for_loss=False,
@@ -141,28 +141,29 @@ config = dict(
         use_chamfer=False,
 
         loss_weights=dict(
-            im=0.5,
+            im=0.6,
             depth=1.0,
         ),
 
         lrs=dict(
-            means3D=0.0001,
-            rgb_colors=0.0025,
-            unnorm_rotations=0.001,
-            logit_opacities=0.02,
-            log_scales=0.0003,
+            means3D=0.00007,
+            rgb_colors=0.003,
+            unnorm_rotations=0.0005,
+            logit_opacities=0.015,
+            log_scales=0.00005,
             cam_unnorm_rots=0.0,
             cam_trans=0.0,
         ),
 
-        prune_gaussians=True,
+        prune_gaussians=False,
+
         pruning_dict=dict(
-            start_after=30,
-            remove_big_after=60,
-            stop_after=200,
-            prune_every=30,
-            removal_opacity_threshold=0.001,
-            final_removal_opacity_threshold=0.001,
+            start_after=20,
+            remove_big_after=40,
+            stop_after=300,
+            prune_every=15,
+            removal_opacity_threshold=0.002,
+            final_removal_opacity_threshold=0.002,
             reset_opacities=False,
             reset_opacities_every=500,
         ),
@@ -181,6 +182,7 @@ config = dict(
         ),
     ),
 
+
     ros=dict(
         rgb_topic=zed_rgb_topic,
         rgb_info_topic=zed_rgb_info_topic,
@@ -196,8 +198,8 @@ config = dict(
         rgb_is_bgr=True,
         depth_unit_scale_m=1.0,
 
-        min_depth_m=0.5,
-        max_depth_m=5.0,
+        min_depth_m=0.3,
+        max_depth_m=6.0,
         process_every_n=1,
     ),
 

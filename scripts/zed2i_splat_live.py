@@ -50,6 +50,8 @@ def parse_args():
     return parser.parse_args()
 
 
+
+
 def caminfo_to_K(cam_info):
     return np.array(cam_info.k, dtype=np.float32).reshape(3, 3)
 
@@ -65,6 +67,47 @@ def depth_to_meters(depth_cv, encoding):
 
     return depth_cv.astype(np.float32)
 
+def colorize_depth(depth_m, min_depth=0.4, max_depth=5.0):
+    valid = np.isfinite(depth_m) & (depth_m > min_depth) & (depth_m < max_depth)
+
+    depth_color = np.zeros((*depth_m.shape, 3), dtype=np.uint8)
+
+    if np.count_nonzero(valid) == 0:
+        return depth_color
+
+    # Use percentiles instead of fixed min/max so the image has more contrast
+    lo = np.percentile(depth_m[valid], 2)
+    hi = np.percentile(depth_m[valid], 98)
+
+    if hi <= lo:
+        lo = min_depth
+        hi = max_depth
+
+    depth_norm = np.zeros_like(depth_m, dtype=np.float32)
+
+    # Invert so closer objects are warmer/redder and far objects are cooler/bluer
+    depth_norm[valid] = 1.0 - np.clip(
+        (depth_m[valid] - lo) / (hi - lo),
+        0.0,
+        1.0,
+    )
+
+    depth_vis = (depth_norm * 255).astype(np.uint8)
+
+    # Boost local contrast so walls/floor edges show more detail
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    depth_vis = clahe.apply(depth_vis)
+
+    depth_color = cv2.applyColorMap(depth_vis, cv2.COLORMAP_JET)
+
+    # Invalid / missing depth stays black
+    depth_color[~valid] = (0, 0, 0)
+
+    # Add white edges to make depth discontinuities easier to see
+    edges = cv2.Canny(depth_vis, 40, 80)
+    depth_color[edges > 0] = (255, 255, 255)
+
+    return depth_color
 
 def ros_rgb_to_rgb(rgb_cv, encoding):
     enc = (encoding or "").lower()
@@ -502,6 +545,20 @@ class ZedSplatamOnline(Node):
             rgb_msg,
             depth_msg,
             rgb_info,
+        )
+
+        depth_color = colorize_depth(
+            depth_np,
+            min_depth=float(self.cfg["ros"].get("min_depth_m", 0.4)),
+            max_depth=float(self.cfg["ros"].get("max_depth_m", 5.0)),
+        )
+
+        depth_debug_dir = self.output_dir / "depth_color_debug"
+        depth_debug_dir.mkdir(parents=True, exist_ok=True)
+
+        cv2.imwrite(
+            str(depth_debug_dir / f"depth_{time_idx:05d}.png"),
+            depth_color,
         )
 
         if time_idx == 0:
