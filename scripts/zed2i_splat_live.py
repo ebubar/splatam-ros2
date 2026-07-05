@@ -30,6 +30,8 @@ from utils.common_utils import seed_everything, save_params
 from utils.keyframe_selection import keyframe_selection_overlap
 from utils.recon_helpers import setup_camera
 from utils.slam_external import build_rotation, prune_gaussians, densify
+from utils.slam_helpers import transform_to_frame, transformed_params2rendervar
+from diff_gaussian_rasterization import GaussianRasterizer as Renderer
 from scripts.splatam import (
     get_loss,
     initialize_optimizer,
@@ -249,8 +251,6 @@ class ZedSplatamOnline(Node):
 
         self.num_frames = int(self.cfg["num_frames"])
 
-        self.num_frames = int(self.cfg["num_frames"])
-
         # total_frames = frames actually processed by SplaTAM
         self.total_frames = 0
 
@@ -347,6 +347,21 @@ class ZedSplatamOnline(Node):
         )
 
         self.ts.registerCallback(self.synced_cb)
+
+        # Live splat rendering: publish the current reconstruction rendered
+        # from the current camera pose so any machine on the ROS network can
+        # watch it (e.g. rqt_image_view /splatam/live_render).
+        viz_cfg = self.cfg.get("viz", {})
+        self.render_every = int(viz_cfg.get("render_every", 1))
+        self.render_save_every = int(viz_cfg.get("render_save_every", 0))
+        self.render_pub = None
+
+        if viz_cfg.get("publish_live_render", True):
+            self.render_pub = self.create_publisher(
+                Image,
+                viz_cfg.get("render_topic", "/splatam/live_render"),
+                qos,
+            )
 
         self.get_logger().info("ZedSplatamOnline ready.")
         self.get_logger().info(f"RGB:   {ros_cfg['rgb_topic']}")
@@ -509,6 +524,50 @@ class ZedSplatamOnline(Node):
             torch.max(densify_depth) / self.cfg["scene_radius_depth_ratio"]
         )
 
+    def publish_live_render(self, time_idx, stamp):
+        if self.render_pub is None or self.params is None:
+            return
+        if self.render_every > 1 and time_idx % self.render_every != 0:
+            return
+
+        with torch.no_grad():
+            transformed = transform_to_frame(
+                self.params,
+                time_idx,
+                gaussians_grad=False,
+                camera_grad=False,
+            )
+            rendervar = transformed_params2rendervar(self.params, transformed)
+            im, _, _ = Renderer(raster_settings=self.cam)(**rendervar)
+
+            rgb = (
+                torch.clamp(im, 0.0, 1.0)
+                .permute(1, 2, 0)
+                .mul(255)
+                .byte()
+                .cpu()
+                .numpy()
+            )
+
+        bgr = np.ascontiguousarray(cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))
+
+        # Build the Image msg manually; cv_bridge's cv2_to_imgmsg is broken
+        # under numpy 2.x (KeyError in its cvtype lookup table)
+        msg = Image()
+        msg.header.stamp = stamp
+        msg.header.frame_id = "splatam_render"
+        msg.height, msg.width = bgr.shape[:2]
+        msg.encoding = "bgr8"
+        msg.is_bigendian = 0
+        msg.step = bgr.strides[0]
+        msg.data = bgr.tobytes()
+        self.render_pub.publish(msg)
+
+        if self.render_save_every > 0 and time_idx % self.render_save_every == 0:
+            render_dir = self.output_dir / "live_render_debug"
+            render_dir.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(render_dir / f"render_{time_idx:05d}.png"), bgr)
+
     def curr_w2c_from_params(self, time_idx):
         with torch.no_grad():
             curr_cam_rot = F.normalize(
@@ -578,8 +637,12 @@ class ZedSplatamOnline(Node):
         # curr_gt_w2c = self.gt_w2c_all_frames
         # 1. Compute ZED-derived initial pose
         zed_link_c2w = odom_to_c2w(odom_msg, self.device)
-        T_link_left_optical = zed_link_to_left_optical(self.device)
-        zed_optical_c2w = zed_link_c2w @ T_link_left_optical
+        if self.cfg["ros"].get("odom_frame", "zed_link") == "optical":
+            # Odometry already poses the optical frame (e.g. dataset replay)
+            zed_optical_c2w = zed_link_c2w
+        else:
+            T_link_left_optical = zed_link_to_left_optical(self.device)
+            zed_optical_c2w = zed_link_c2w @ T_link_left_optical
 
         if time_idx == 0:
             self.first_zed_optical_c2w = zed_optical_c2w.detach().clone()
@@ -598,15 +661,8 @@ class ZedSplatamOnline(Node):
             with torch.no_grad():
                 self.set_camera_pose_from_w2c(time_idx, zed_w2c)
 
-        # 3. Run SplaTAM tracking refinement because use_gt_poses=False
-        if time_idx > 0 and not self.cfg["tracking"]["use_gt_poses"]:
-            ...
-            # existing tracking optimization loop
-
-        # 4. Get final refined pose
+        # Store the ZED-initialized pose; tracking refinement below updates params in place
         curr_w2c = self.curr_w2c_from_params(time_idx)
-
-        # 5. Store refined pose, not raw ZED pose
         self.gt_w2c_all_frames.append(curr_w2c.detach().clone())
         curr_gt_w2c = self.gt_w2c_all_frames
         
@@ -621,16 +677,6 @@ class ZedSplatamOnline(Node):
         }
 
         tracking_curr_data = curr_data
-
-        if time_idx > 0:
-            self.params = initialize_camera_pose(
-                self.params,
-                time_idx,
-                forward_prop=False,
-            )
-
-            with torch.no_grad():
-                self.set_camera_pose_from_w2c(time_idx, zed_w2c)
 
         if time_idx > 0 and not self.cfg["tracking"]["use_gt_poses"]:
             optimizer = initialize_optimizer(
@@ -819,6 +865,8 @@ class ZedSplatamOnline(Node):
             )
 
             self.keyframe_time_indices.append(time_idx)
+
+        self.publish_live_render(time_idx, rgb_msg.header.stamp)
 
         self.total_frames += 1
 

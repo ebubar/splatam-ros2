@@ -1,3 +1,21 @@
+# splatam-ros2: Live Gaussian Splatting from a ZED2i over ROS2
+
+This fork of [SplaTAM](https://spla-tam.github.io/) adds a live pipeline that
+subscribes to a **ZED2i camera** streaming RGB-D + odometry over a **ROS2**
+network and builds a Gaussian splat in near-realtime on an edge platform
+(NVIDIA Orin / Thor) or a CUDA PC.
+
+**Start here:**
+
+* [docs/README.md](docs/README.md) — architecture, setup, and how to run (live camera, rosbag, or fully automated)
+* [docs/TUNING.md](docs/TUNING.md) — improving splat quality
+* Quick start: `./bash_scripts/zed2i_live.bash` (live SLAM → PLY export → viewer)
+* Key files: `scripts/zed2i_splat_live.py` (ROS2 node), `configs/zed2i/zed2i_splat_live.py` (all settings), `docker/` (containerized deployment)
+
+Everything below is the original upstream SplaTAM documentation.
+
+---
+
 <!-- PROJECT LOGO -->
 
 <p align="center">
@@ -65,7 +83,7 @@
 </details>
 
 ## New Docker Install
-docker build --no-cache -t splatam-clean:cu121 -f docker/Dockerfile .
+docker build --no-cache -t splatam-clean:cu121 -f docker/Dockerfile.splatam .
 
 ./docker/run.sh
 

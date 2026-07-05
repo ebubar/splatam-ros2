@@ -18,7 +18,7 @@ downscale_factor = 1.0
 densify_downscale_factor = 1.0
 
 # Recording
-live_stream_dir = "experiments/ZED2i_Live/zeros2 bag info zed2i_splatam_tf_bag/dTest/LiveStream"
+live_stream_dir = "experiments/ZED2i_Live/LiveStream"
 mp4_dir = "experiments/mp4"
 record_cam = True
 record_depth = True
@@ -155,13 +155,15 @@ config = dict(
             cam_trans=0.0,
         ),
 
-        prune_gaussians=False,
+        # Prune low-opacity Gaussians (floaters) during mapping; schedule is in
+        # mapping iterations, so thresholds must stay below mapping num_iters (180)
+        prune_gaussians=True,
 
         pruning_dict=dict(
             start_after=20,
             remove_big_after=40,
-            stop_after=300,
-            prune_every=15,
+            stop_after=160,
+            prune_every=20,
             removal_opacity_threshold=0.002,
             final_removal_opacity_threshold=0.002,
             reset_opacities=False,
@@ -201,9 +203,18 @@ config = dict(
         min_depth_m=0.3,
         max_depth_m=6.0,
         process_every_n=1,
+        # "zed_link": odom poses zed_camera_link (live ZED wrapper);
+        # "optical": odom already poses the left optical frame (dataset replay)
+        odom_frame="zed_link",
     ),
 
     viz=dict(
+        # Publish the live splat render as a ROS image; view on any machine
+        # with: ros2 run rqt_image_view rqt_image_view /splatam/live_render
+        publish_live_render=True,
+        render_topic="/splatam/live_render",
+        render_every=1,
+        render_save_every=0,  # also save every Nth render under the run dir (0=off)
         render_mode="color",
         offset_first_viz_cam=True,
         show_sil=False,

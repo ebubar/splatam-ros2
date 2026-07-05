@@ -1,3 +1,11 @@
+> **Note (this repo):** the content below is vendored from
+> [husarion/zed-docker](https://github.com/husarion/zed-docker) as reference for
+> the ZED camera-side images. For **this project's** containers see
+> `docker/Dockerfile.splatam` (SplaTAM runtime, built/run via `docker/run.sh`
+> or `bash_scripts/main_thor.bash`) and `docker/Dockerfile.ros2_zed`
+> (ZED ROS2 wrapper). The bash scripts in `bash_scripts/` are the primary
+> entrypoints; Docker is only required on Thor-style all-in-one edge deploys.
+
 <h1 align="center">
 Docker Images for ZED Camera
 </h1>

@@ -50,7 +50,7 @@ if [ "${THOR_INSIDE_CONTAINER:-0}" != "1" ]; then
 
     IMAGE_NAME="${IMAGE_NAME:-splatam-thor:latest}"
     CONTAINER_NAME="${CONTAINER_NAME:-splatam-thor}"
-    DOCKERFILE_PATH="${DOCKERFILE_PATH:-$REPO_ROOT/docker/Dockerfile}"
+    DOCKERFILE_PATH="${DOCKERFILE_PATH:-$REPO_ROOT/docker/Dockerfile.splatam}"
 
     command -v docker >/dev/null 2>&1 || {
         log_error "docker not found"
