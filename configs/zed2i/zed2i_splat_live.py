@@ -35,9 +35,22 @@ zed_depth_info_topic = "/zed/zed_node/depth/depth_registered/camera_info"
 use_odom = True
 zed_odom_topic = "/zed/zed_node/odom"
 
+# ZED NEURAL depth confidence map (optional). Enable
+# `depth.depth_confidence` publishing in the ZED wrapper to use this; it masks
+# out low-confidence stereo pixels before they seed Gaussians. Set to None to
+# disable confidence masking.
+zed_confidence_topic = "/zed/zed_node/confidence/confidence_map"
+
 # Encodings
 zed_rgb_encoding = "bgr8"
 zed_depth_encoding = "32FC1"
+
+# Pose fusion:
+#   "vio_seed_refine" -> ZED VIO odom seeds each pose, SplaTAM tracking refines
+#                        it against the map (most accurate; recommended).
+#   "vio_only"        -> trust ZED VIO directly (fastest, no refinement).
+#   "splatam_only"    -> ignore VIO, constant-velocity + tracking (baseline).
+pose_mode = "vio_seed_refine"
 
 map_every = 10
 
@@ -58,6 +71,29 @@ config = dict(
     num_frames=num_frames,
     seed=seed,
     primary_device=primary_device,
+    pose_mode=pose_mode,
+
+    # Periodic housekeeping (0 disables). Per-frame torch.cuda.empty_cache()
+    # tanks throughput, so we only do it occasionally.
+    housekeeping=dict(empty_cache_every=50),
+
+    # Debug depth PNGs are expensive disk I/O; disabled by default (0). Set to
+    # e.g. 20 to dump one colourised depth image every 20 processed frames.
+    debug=dict(save_depth_every=0),
+
+    # Operator browser viewer + region-of-interest refinement.
+    viewer=dict(
+        enable=True,
+        host="0.0.0.0",
+        port=8080,
+        publish_every=3,            # push a splat snapshot every N frames
+        max_preview_points=150000,  # cap points streamed to the laptop
+    ),
+
+    # Focused high-quality refinement when the operator selects a region.
+    roi_refine=dict(
+        base_iters=300,             # * quality slider = total refine iterations
+    ),
 
     save_stream_frames=True,
 
@@ -192,6 +228,9 @@ config = dict(
         use_odom=use_odom,
         odom_topic=zed_odom_topic,
 
+        confidence_topic=zed_confidence_topic,
+        confidence_max_cost=50.0,   # ZED confidence cost in [0,100]; lower=better
+
         rgb_encoding=zed_rgb_encoding,
         depth_encoding=zed_depth_encoding,
 
@@ -201,6 +240,7 @@ config = dict(
         min_depth_m=0.3,
         max_depth_m=6.0,
         process_every_n=1,
+        sync_slop_s=0.15,
     ),
 
     viz=dict(

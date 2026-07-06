@@ -1,11 +1,9 @@
 #!/bin/bash
-# bash_scripts/zed2i_online_ros2.bash
+# Live ZED2i -> ROS2 -> SplaTAM with operator viewer.
+# Open the operator viewer from a laptop at http://<this-machine-ip>:8080/
 set -e
 
-if [ "$#" -ne 1 ]; then
-  echo "Usage: bash_scripts/zed2i_online_ros2.bash <config_file>"
-  exit 1
-fi
+CONFIG="${1:-configs/zed2i/zed2i_splat_live.py}"
 
-python3 scripts/zed2i_ros2_demo.py --config "$1"
-python3 viz_scripts/final_recon.py "$1"
+python3 scripts/zed2i_splat_live.py --config "$CONFIG"
+python3 viz_scripts/final_recon.py "$CONFIG"

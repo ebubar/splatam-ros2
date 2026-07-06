@@ -8,6 +8,34 @@ This setup streams live RGB-D data from a **ZED2i camera** running on an NVIDIA 
 
 ---
 
+## What's new (optimized pipeline)
+
+The live pipeline (`scripts/zed2i_splat_live.py`) was reworked for accuracy,
+throughput, and operator control. See also
+[`CAPTURE_PATTERNS.md`](./CAPTURE_PATTERNS.md) and
+[`OPERATOR_VIEWER.md`](./OPERATOR_VIEWER.md).
+
+* **VIO-fused poses that are actually used.** ZED VIO odometry *seeds* each
+  camera pose and SplaTAM tracking *refines* it against the live map. Previously
+  the refined pose was computed and then silently discarded (`curr_w2c = zed_w2c`),
+  so only raw VIO was used — that's fixed. Mode is selectable via
+  `pose_mode` (`vio_seed_refine` / `vio_only` / `splatam_only`).
+* **ZED neural depth replaces LiDAR.** Depth decode/clip/unit-scaling is
+  centralised in `utils/zed_depth.py`, with optional **confidence-map masking**
+  (`confidence_topic`) to drop low-confidence stereo pixels, and a live
+  `depth_fill` health metric.
+* **Real-time throughput.** Removed per-frame disk writes of debug depth PNGs
+  and per-frame `torch.cuda.empty_cache()` (now periodic); de-duplicated the
+  tracking/pose-init blocks that were running twice per frame.
+* **Operator browser viewer.** A dependency-free web server streams the live
+  splat to an operator laptop (`livesplat/viewer_server.py`); the operator boxes
+  a region and requests a higher-quality splat of it.
+* **Guided high-quality object capture.** `livesplat/capture_advisor.py` measures
+  angular coverage of the selected object and emits next-best-view hints derived
+  from splat/NeRF benchmark capture patterns.
+
+---
+
 ## System Architecture
 
 ```
@@ -379,6 +407,23 @@ To launch the zed wrapper node, execute bying running the following command:
 ```bash
 ros2 launch zed_wrapper <> camera_model:=zed2i pos_tracking_mode:=GEN_3
 ```
+
+To get the **neural depth that replaces LiDAR** (and the confidence map the
+pipeline can mask on), launch the ZED wrapper with NEURAL depth and confidence
+publishing enabled, e.g.:
+
+```bash
+ros2 launch zed_wrapper zed_camera.launch.py \
+  camera_model:=zed2i \
+  pos_tracking_mode:=GEN_3 \
+  depth.depth_mode:=NEURAL_PLUS \
+  depth.point_cloud_freq:=0.0
+```
+
+Use `NEURAL` if `NEURAL_PLUS` is too heavy for the Orin. The pipeline consumes
+`depth/depth_registered` (metric `32FC1`) and, if published,
+`confidence/confidence_map`. Set `confidence_topic=None` in the config to skip
+confidence masking.
 
 
 
