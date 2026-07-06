@@ -52,6 +52,12 @@ from utils.zed_depth import (
     apply_confidence_mask,
     depth_fill_ratio,
 )
+from utils.pose_utils import (
+    rotmat_to_quat_wxyz,
+    odom_to_optical_c2w,
+    invert_transform,
+    relative_pose,
+)
 from scripts.splatam import (
     get_loss,
     initialize_optimizer,
@@ -94,68 +100,6 @@ def ros_rgb_to_rgb(rgb_cv, encoding):
             return cv2.cvtColor(rgb_cv, cv2.COLOR_BGR2RGB)
         return rgb_cv
     raise ValueError(f"Unexpected RGB image shape: {rgb_cv.shape}")
-
-
-def rotmat_to_quat_wxyz(R):
-    """3x3 rotation matrix -> quaternion (w, x, y, z), SplaTAM order."""
-    tr = R[0, 0] + R[1, 1] + R[2, 2]
-    if tr > 0:
-        S = torch.sqrt(tr + 1.0) * 2.0
-        w = 0.25 * S
-        x = (R[2, 1] - R[1, 2]) / S
-        y = (R[0, 2] - R[2, 0]) / S
-        z = (R[1, 0] - R[0, 1]) / S
-    elif (R[0, 0] > R[1, 1]) and (R[0, 0] > R[2, 2]):
-        S = torch.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2]) * 2.0
-        w = (R[2, 1] - R[1, 2]) / S
-        x = 0.25 * S
-        y = (R[0, 1] + R[1, 0]) / S
-        z = (R[0, 2] + R[2, 0]) / S
-    elif R[1, 1] > R[2, 2]:
-        S = torch.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2]) * 2.0
-        w = (R[0, 2] - R[2, 0]) / S
-        x = (R[0, 1] + R[1, 0]) / S
-        y = 0.25 * S
-        z = (R[1, 2] + R[2, 1]) / S
-    else:
-        S = torch.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1]) * 2.0
-        w = (R[1, 0] - R[0, 1]) / S
-        x = (R[0, 2] + R[2, 0]) / S
-        y = (R[1, 2] + R[2, 1]) / S
-        z = 0.25 * S
-    q = torch.stack([w, x, y, z])
-    return q / torch.linalg.norm(q)
-
-
-def odom_to_c2w(odom_msg, device):
-    p = odom_msg.pose.pose.position
-    q = odom_msg.pose.pose.orientation
-    x, y, z, w = q.x, q.y, q.z, q.w
-    R = torch.tensor(
-        [
-            [1 - 2 * y * y - 2 * z * z, 2 * x * y - 2 * z * w, 2 * x * z + 2 * y * w],
-            [2 * x * y + 2 * z * w, 1 - 2 * x * x - 2 * z * z, 2 * y * z - 2 * x * w],
-            [2 * x * z - 2 * y * w, 2 * y * z + 2 * x * w, 1 - 2 * x * x - 2 * y * y],
-        ],
-        device=device,
-        dtype=torch.float32,
-    )
-    c2w = torch.eye(4, device=device, dtype=torch.float32)
-    c2w[:3, :3] = R
-    c2w[:3, 3] = torch.tensor([p.x, p.y, p.z], device=device, dtype=torch.float32)
-    return c2w
-
-
-def zed_link_to_left_optical(device):
-    """Static transform ZED body link -> left camera optical frame (from /tf_static)."""
-    T = torch.eye(4, device=device, dtype=torch.float32)
-    T[:3, 3] = torch.tensor([-0.01, 0.06, 0.015], device=device, dtype=torch.float32)
-    T[:3, :3] = torch.tensor(
-        [[0.0, 0.0, 1.0], [-1.0, 0.0, 0.0], [0.0, -1.0, 0.0]],
-        device=device,
-        dtype=torch.float32,
-    )
-    return T
 
 
 def colorize_depth(depth_m, min_depth=0.4, max_depth=5.0):
@@ -354,8 +298,10 @@ class ZedSplatamOnline(Node):
 
     # ---- Pose helpers -------------------------------------------------------
     def set_camera_pose_from_w2c(self, time_idx, w2c):
-        q = rotmat_to_quat_wxyz(w2c[:3, :3])
-        t = w2c[:3, 3]
+        # Pose math in numpy (tested in utils.pose_utils), then write to params.
+        w2c_np = w2c.detach().cpu().numpy() if torch.is_tensor(w2c) else np.asarray(w2c)
+        q = torch.tensor(rotmat_to_quat_wxyz(w2c_np[:3, :3]), device=self.device).float()
+        t = torch.tensor(w2c_np[:3, 3], device=self.device).float()
         rot_slot = self.params["cam_unnorm_rots"][..., time_idx]
         trans_slot = self.params["cam_trans"][..., time_idx]
         self.params["cam_unnorm_rots"][..., time_idx] = q.reshape_as(rot_slot)
@@ -371,13 +317,19 @@ class ZedSplatamOnline(Node):
         return w2c
 
     def zed_w2c_relative(self, odom_msg):
-        """VIO odom -> world-to-cam in the map (first-frame) frame."""
-        zed_link_c2w = odom_to_c2w(odom_msg, self.device)
-        zed_optical_c2w = zed_link_c2w @ zed_link_to_left_optical(self.device)
+        """VIO odom -> world-to-cam in the map (first-frame) frame.
+
+        Math is done in numpy (utils.pose_utils, unit-tested) and returned as a
+        torch tensor on device for the renderer / param slots.
+        """
+        p = odom_msg.pose.pose.position
+        q = odom_msg.pose.pose.orientation
+        zed_optical_c2w = odom_to_optical_c2w([p.x, p.y, p.z], [q.x, q.y, q.z, q.w])
         if self.first_zed_optical_c2w is None:
-            self.first_zed_optical_c2w = zed_optical_c2w.detach().clone()
-        rel_c2w = torch.linalg.inv(self.first_zed_optical_c2w) @ zed_optical_c2w
-        return torch.linalg.inv(rel_c2w)
+            self.first_zed_optical_c2w = zed_optical_c2w.copy()
+        rel_c2w = relative_pose(self.first_zed_optical_c2w, zed_optical_c2w)
+        w2c_np = invert_transform(rel_c2w)
+        return torch.tensor(w2c_np, device=self.device).float()
 
     # ---- First-frame map init ----------------------------------------------
     def initialize_first_frame(self, K_scaled, rgb, depth_m, rgb_info):

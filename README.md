@@ -64,6 +64,38 @@
   </ol>
 </details>
 
+## ZED 2i Live Pipeline (this fork)
+
+This fork adds a real-time **ZED 2i → ROS2 → SplaTAM** pipeline with VIO-fused
+poses, ZED neural depth (LiDAR-free), a browser-based **operator viewer**, and
+operator-selectable **high-quality region refinement** with benchmark-informed
+capture guidance.
+
+* Live pipeline: `scripts/zed2i_splat_live.py` (config `configs/zed2i/zed2i_splat_live.py`)
+* Operator viewer + ROI refine: [`docs/OPERATOR_VIEWER.md`](docs/OPERATOR_VIEWER.md)
+* Ideal capture patterns for high-quality objects: [`docs/CAPTURE_PATTERNS.md`](docs/CAPTURE_PATTERNS.md)
+* Full setup / topics / bag replay: [`docs/README.md`](docs/README.md)
+
+Try the operator UX **without any hardware** (synthetic scene, browser only):
+
+```bash
+pip install numpy
+python3 -m livesplat.demo_viewer        # then open http://localhost:8080/
+```
+
+Plan a benchmark-quality capture of an object, or score existing coverage:
+
+```bash
+python3 scripts/plan_capture.py --radius 0.3
+python3 scripts/plan_capture.py --box -0.4 0 0.6 0.4 0.8 1.4 --params path/to/params.npz
+```
+
+Run the hardware-independent tests (pose math, ROI, advisor, viewer, depth):
+
+```bash
+pip install numpy pytest && python3 -m pytest
+```
+
 ## New Docker Install
 docker build --no-cache -t splatam-clean:cu121 -f docker/Dockerfile .
 

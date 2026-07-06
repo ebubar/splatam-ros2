@@ -30,6 +30,7 @@ from typing import List, Optional
 import numpy as np
 
 from livesplat.roi import RegionOfInterest
+from utils.pose_utils import camera_centers_from_w2c as _camera_centers_from_w2c
 
 
 # --- Benchmark-derived defaults ---------------------------------------------
@@ -60,20 +61,6 @@ class Viewpoint:
 
     def to_dict(self) -> dict:
         return asdict(self)
-
-
-def _camera_centers_from_w2c(w2c_stack: np.ndarray) -> np.ndarray:
-    """Camera centres in world frame from a stack of 4x4 world-to-camera mats.
-
-    For w2c = [R | t], the camera centre C = -R^T t.
-    """
-    w2c = np.asarray(w2c_stack, dtype=np.float64)
-    if w2c.ndim == 2:
-        w2c = w2c[None]
-    R = w2c[:, :3, :3]
-    t = w2c[:, :3, 3]
-    C = -np.einsum("nij,nj->ni", np.transpose(R, (0, 2, 1)), t)
-    return C
 
 
 def _dirs_to_azel(dirs: np.ndarray):

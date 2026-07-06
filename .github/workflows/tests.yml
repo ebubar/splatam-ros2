@@ -1,0 +1,31 @@
+name: livesplat-tests
+
+# Hardware-independent tests for the live ZED SplaTAM tooling: pose math,
+# ROI geometry, capture advisor, viewer server, depth utils. These need no
+# ZED / ROS2 / CUDA, so they run on stock GitHub runners.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test deps
+        run: python -m pip install --upgrade pip numpy pytest
+      - name: Run tests
+        run: python -m pytest
+      - name: Byte-compile pipeline modules
+        run: |
+          python -m py_compile \
+            utils/pose_utils.py utils/zed_depth.py \
+            livesplat/roi.py livesplat/bridge.py livesplat/capture_advisor.py \
+            livesplat/viewer_server.py livesplat/demo_viewer.py \
+            scripts/plan_capture.py \
+            configs/zed2i/zed2i_splat_live.py
