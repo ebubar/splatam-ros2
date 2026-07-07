@@ -7,6 +7,7 @@ network and builds a Gaussian splat in near-realtime on an edge platform
 
 **Start here:**
 
+* [docs/LAPTOP_QUICKSTART.md](docs/LAPTOP_QUICKSTART.md) — run the full pipeline on one machine with a public dataset, no camera needed
 * [docs/README.md](docs/README.md) — architecture, setup, and how to run (live camera, rosbag, or fully automated)
 * [docs/TUNING.md](docs/TUNING.md) — improving splat quality
 * Quick start: `./bash_scripts/zed2i_live.bash` (live SLAM → PLY export → viewer)

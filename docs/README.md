@@ -264,6 +264,58 @@ python3 scripts/zed2i_splat_live.py --config configs/zed2i/zed2i_replay_test.py
 python3 scripts/dataset_player.py --dataset experiments/ZED2i_Captures/<scene> --rate 5
 ```
 
+## Handling ZED Frame Drops / Slow Input Over ROS
+
+Symptoms: the live node logs frames far apart in time, tracking degrades,
+and the splat gets ghosty. Diagnose *after the fact* with
+`scripts/capture_report.py` — big translation/rotation steps between
+processed frames are the fingerprint of drops or too-fast motion.
+
+Mitigations, in order of effectiveness:
+
+1. **Record a bag on the camera host and process offline** (the
+   `main.bash` / offline-quality path). Bag recording on the Orin drops far
+   fewer frames than shipping images over WiFi/DDS to a busy SLAM process,
+   and offline replay can run slower than realtime — zero drops.
+2. **Lower the published resolution/rate at the source** (ZED wrapper
+   params, e.g. `pub_resolution: CUSTOM`, `pub_frame_rate: 15`): fewer/smaller
+   messages beat compressed transports for latency.
+3. **Match the processing rate honestly**: raise `ros.process_every_n` so
+   SplaTAM works on a steady cadence instead of draining the sync queue in
+   bursts. A regular 3 Hz beats an erratic 4–10 Hz.
+4. **DDS tuning on lossy networks**: prefer wired links for the camera host;
+   consider the zenoh bridge (`docs/zenoh_setup.txt`, `bash_scripts/zenoh/`)
+   over WiFi.
+5. **Slow the robot** — especially turns. The capture report's rotation-step
+   metric is the one to watch; >6°/processed-frame costs quality fast.
+
+## Object-of-Interest High-Res Splat (automated ROI)
+
+Goal: robot walkthrough gives a low-res scene splat; an object detector (or
+you) picks out items of interest; those get re-splatted at high quality from
+only the frames that observed them. One command:
+
+```bash
+# text prompt (open-vocabulary, needs: pip install transformers)
+bash_scripts/object_splat.bash experiments/ZED2i_Captures/<scene> --prompt "a keyboard"
+
+# or point at a rectangle on a frame (no extra deps)
+bash_scripts/object_splat.bash experiments/ZED2i_Captures/<scene> --rect <frame> <x> <y> <w> <h>
+```
+
+Set `OBJECT_SPLAT_MASK=1` to additionally mask depth outside the ROI in the
+subset frames — the entire Gaussian budget then goes to the object itself
+(object-only splat, no background; experimental).
+
+Under the hood: `scripts/detect_roi.py` finds the object in the RGB frames
+(OWL-ViT for prompts) and back-projects it through the depth into a 3D box
+(`roi_<label>.json`); `scripts/roi_refine.py --roi-json` builds the frame
+subset; SplaTAM re-splats it at 200 mapping iterations and exports the PLY.
+Each stage can also be run separately — see the script docstrings. Heavier
+scene-graph pipelines (e.g. ConceptGraphs) can drop in by writing the same
+`roi_<label>.json` format: `{"box": [xmin, xmax, ymin, ymax, zmin, zmax]}`
+in the splat's first-camera coordinate frame.
+
 ## Region-of-Interest Refinement (SuperSplat as the GUI)
 
 To get a high-quality splat of one region (e.g. an object of interest):

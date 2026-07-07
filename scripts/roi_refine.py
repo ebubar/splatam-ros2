@@ -38,6 +38,7 @@ def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
     src = p.add_mutually_exclusive_group(required=True)
     src.add_argument("--roi-ply", help="PLY cropped to the ROI (e.g. SuperSplat export)")
+    src.add_argument("--roi-json", help="ROI json from scripts/detect_roi.py")
     src.add_argument("--box", type=float, nargs=6,
                      metavar=("XMIN", "XMAX", "YMIN", "YMAX", "ZMIN", "ZMAX"))
     p.add_argument("--dataset", required=True,
@@ -51,6 +52,10 @@ def parse_args():
                         "test points (8 corners + center) project into it")
     p.add_argument("--max-dist", type=float, default=6.0,
                    help="Discard frames whose camera is farther than this from the box center")
+    p.add_argument("--mask-outside", action="store_true",
+                   help="Zero out depth outside the ROI's projection in each "
+                        "kept frame, so the entire Gaussian budget goes to "
+                        "the object instead of the whole visible scene")
     p.add_argument("--overwrite", action="store_true")
     return p.parse_args()
 
@@ -81,11 +86,46 @@ def frame_sees_box(c2w_rel, K, w, h, box_pts, max_dist, min_visible):
     return visible >= min_visible
 
 
+def project_box_rect(c2w_rel, K, w, h, box_pts):
+    """2D bounding rect (x0, y0, x1, y1) of the ROI box in this frame."""
+    w2c = np.linalg.inv(c2w_rel)
+    pts_cam = (w2c[:3, :3] @ box_pts.T + w2c[:3, 3:4]).T
+    us, vs = [], []
+    for pt in pts_cam:
+        if pt[2] <= 0.05:
+            continue
+        us.append(K[0, 0] * pt[0] / pt[2] + K[0, 2])
+        vs.append(K[1, 1] * pt[1] / pt[2] + K[1, 2])
+    if len(us) < 2:
+        return 0, 0, w, h
+    x0 = int(np.clip(min(us), 0, w))
+    x1 = int(np.clip(max(us), 0, w))
+    y0 = int(np.clip(min(vs), 0, h))
+    y1 = int(np.clip(max(vs), 0, h))
+    if x1 - x0 < 8 or y1 - y0 < 8:
+        return 0, 0, w, h
+    return x0, y0, x1, y1
+
+
+def write_masked_depth(src, dst, rect):
+    import cv2
+    depth = cv2.imread(str(src), cv2.IMREAD_UNCHANGED)
+    x0, y0, x1, y1 = rect
+    mask = np.zeros_like(depth)
+    mask[y0:y1, x0:x1] = depth[y0:y1, x0:x1]
+    cv2.imwrite(str(dst), mask)
+
+
 def main():
     args = parse_args()
 
     if args.roi_ply:
         lo, hi = box_from_ply(args.roi_ply)
+    elif args.roi_json:
+        with open(args.roi_json) as f:
+            b = json.load(f)["box"]
+        lo = np.array([b[0], b[2], b[4]])
+        hi = np.array([b[1], b[3], b[5]])
     else:
         b = args.box
         lo = np.array([b[0], b[2], b[4]])
@@ -133,13 +173,25 @@ def main():
     (out / "rgb").mkdir(parents=True)
     (out / "depth").mkdir(parents=True)
 
+    kept_c2ws = {fr["file_path"]: c2w for fr, c2w in zip(manifest["frames"], c2ws)
+                 if fr in kept}
     for fr in kept:
-        for key in ("file_path", "depth_path"):
-            src, dst = dataset / fr[key], out / fr[key]
+        src, dst = dataset / fr["file_path"], out / fr["file_path"]
+        try:
+            os.link(src, dst)
+        except OSError:
+            shutil.copy(src, dst)
+        d_src, d_dst = dataset / fr["depth_path"], out / fr["depth_path"]
+        if args.mask_outside:
+            rect = project_box_rect(
+                c2w0_inv @ kept_c2ws[fr["file_path"]], K, w, h, box_pts
+            )
+            write_masked_depth(d_src, d_dst, rect)
+        else:
             try:
-                os.link(src, dst)
+                os.link(d_src, d_dst)
             except OSError:
-                shutil.copy(src, dst)
+                shutil.copy(d_src, d_dst)
 
     out_manifest = dict(manifest)
     out_manifest["frames"] = kept
