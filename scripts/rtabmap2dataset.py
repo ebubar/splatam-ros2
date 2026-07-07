@@ -48,7 +48,15 @@ P_GL = np.diag([1.0, -1.0, -1.0, 1.0]).astype(np.float64)
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--bag", required=True, help="Path to rosbag2 directory")
-    p.add_argument("--poses", required=True, help="RTAB-Map optimized poses, TUM format")
+    poses = p.add_mutually_exclusive_group(required=True)
+    poses.add_argument("--poses", help="RTAB-Map optimized poses, TUM format")
+    poses.add_argument("--poses-from-odom", action="store_true",
+                       help="Take poses from the bag's odometry topic instead "
+                            "of a pose file (no RTAB-Map needed; poses will "
+                            "have VIO drift). Combine with --pose-stride to "
+                            "thin high-rate odometry (e.g. 30 Hz odom, "
+                            "--pose-stride 6 -> 5 frames/sec).")
+    p.add_argument("--odom-topic", default="/zed/zed_node/odom")
     p.add_argument("--output", required=True, help="Output dataset directory")
     p.add_argument("--rgb-topic", default="/zed/zed_node/rgb/color/rect/image")
     p.add_argument("--depth-topic", default="/zed/zed_node/depth/depth_registered")
@@ -125,6 +133,32 @@ def stride_poses(times, mats, stride):
     if stride <= 1:
         return times, mats
     return times[::stride], mats[::stride]
+
+
+def load_odom_poses(bag_path, odom_topic, pose_frame):
+    """First pass over the bag: collect camera poses from the odometry topic."""
+    T_link_opt = zed_link_to_left_optical() if pose_frame == "zed_link" else np.eye(4)
+    reader = open_bag(bag_path)
+    type_map = {t.name: t.type for t in reader.get_all_topics_and_types()}
+    if odom_topic not in type_map:
+        sys.exit(f"Odom topic {odom_topic} not in bag. Available:\n  "
+                 + "\n  ".join(sorted(type_map)))
+    msg_type = get_message(type_map[odom_topic])
+
+    times, mats = [], []
+    while reader.has_next():
+        topic, data, _ = reader.read_next()
+        if topic != odom_topic:
+            continue
+        msg = deserialize_message(data, msg_type)
+        p, q = msg.pose.pose.position, msg.pose.pose.orientation
+        c2w = np.eye(4)
+        c2w[:3, :3] = quat_to_rotmat(q.x, q.y, q.z, q.w)
+        c2w[:3, 3] = [p.x, p.y, p.z]
+        times.append(stamp_to_sec(msg.header))
+        mats.append(c2w @ T_link_opt)
+    order = np.argsort(times)
+    return [times[i] for i in order], [mats[i] for i in order]
 
 
 def nearest_pose_idx(pose_times, t):
@@ -217,10 +251,15 @@ def open_bag(bag_path):
 def main():
     args = parse_args()
 
-    pose_times, pose_mats = load_tum_poses(args.poses, args.pose_frame)
+    if args.poses_from_odom:
+        pose_times, pose_mats = load_odom_poses(
+            args.bag, args.odom_topic, args.pose_frame
+        )
+    else:
+        pose_times, pose_mats = load_tum_poses(args.poses, args.pose_frame)
     pose_times, pose_mats = stride_poses(pose_times, pose_mats, args.pose_stride)
     if not pose_times:
-        sys.exit(f"No poses parsed from {args.poses}")
+        sys.exit("No poses found")
     print(f"Loaded {len(pose_times)} optimized poses "
           f"({pose_times[0]:.3f} .. {pose_times[-1]:.3f})")
 

@@ -7,6 +7,8 @@ network and builds a Gaussian splat in near-realtime on an edge platform
 
 **Start here:**
 
+* [QUICKSTART.md](QUICKSTART.md) — the three entry points: demo on public data, process a robot bag, or run the live stack
+* [docs/DATA_COLLECTION.md](docs/DATA_COLLECTION.md) — one-pager for field teams recording ZED2i bags
 * [docs/LAPTOP_QUICKSTART.md](docs/LAPTOP_QUICKSTART.md) — run the full pipeline on one machine with a public dataset, no camera needed
 * [docs/README.md](docs/README.md) — architecture, setup, and how to run (live camera, rosbag, or fully automated)
 * [docs/TUNING.md](docs/TUNING.md) — improving splat quality
