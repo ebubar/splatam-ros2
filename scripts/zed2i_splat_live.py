@@ -395,6 +395,12 @@ class ZedSplatamOnline(Node):
                 qos,
             )
 
+        # Browser-based live 3D view + parameter panel (viser)
+        self.studio = None
+        if viz_cfg.get("studio", False):
+            from scripts.splat_studio import SplatStudio
+            self.studio = SplatStudio(self, self.cfg)
+
         self.get_logger().info("ZedSplatamOnline ready.")
         self.get_logger().info(f"RGB:   {ros_cfg['rgb_topic']}")
         self.get_logger().info(f"Depth: {ros_cfg['depth_topic']}")
@@ -659,8 +665,53 @@ class ZedSplatamOnline(Node):
 
         return curr_w2c
 
+    def soft_reset(self):
+        """Restart mapping from the next frame; camera and node keep running."""
+        self.params = None
+        self.variables = None
+        self.intrinsics = None
+        self.first_frame_w2c = None
+        self.cam = None
+        self.densify_intrinsics = None
+        self.densify_cam = None
+        self.keyframe_list = []
+        self.keyframe_time_indices = []
+        self.gt_w2c_all_frames = []
+        self.total_frames = 0
+        self.first_zed_optical_c2w = None
+        if self.studio is not None:
+            self.studio.clear_scene()
+        self.get_logger().info("Map reset — rebuilding from next frame.")
+
+    def save_snapshot(self):
+        snap_dir = self.output_dir / f"snapshot_{self.studio._snapshot_count:02d}"
+        self.studio._snapshot_count += 1
+        out = dict(self.params)
+        out["timestep"] = self.variables["timestep"]
+        out["intrinsics"] = self.intrinsics.detach().cpu().numpy()
+        out["w2c"] = self.first_frame_w2c.detach().cpu().numpy()
+        out["org_width"] = self.cfg["data"]["desired_image_width"]
+        out["org_height"] = self.cfg["data"]["desired_image_height"]
+        out["gt_w2c_all_frames"] = np.stack(
+            [m.detach().cpu().numpy() for m in self.gt_w2c_all_frames], axis=0)
+        out["keyframe_time_indices"] = np.array(self.keyframe_time_indices)
+        snap_dir.mkdir(parents=True, exist_ok=True)
+        save_params(out, str(snap_dir))
+        self.get_logger().info(f"Snapshot saved: {snap_dir}")
+
     def synced_cb(self, rgb_msg, depth_msg):
         self.received_frames += 1
+
+        if self.studio is not None:
+            if self.studio.reset_requested:
+                self.studio.reset_requested = False
+                self.soft_reset()
+            if self.studio.save_requested:
+                self.studio.save_requested = False
+                if self.params is not None:
+                    self.save_snapshot()
+            if self.studio.paused:
+                return
 
         if self.latest_rgb_info is None:
             self.get_logger().warn("Waiting for RGB CameraInfo...")
@@ -947,6 +998,16 @@ class ZedSplatamOnline(Node):
         self.publish_live_render(time_idx, rgb_msg.header.stamp)
 
         self.total_frames += 1
+
+        if self.studio is not None:
+            self.studio.update_scene(self.params, rel_c2w)
+            frame_dt_so_far = time.time() - frame_start
+            self.studio.update_stats(
+                f"**Frame {self.total_frames}** | "
+                f"gaussians: {int(self.params['means3D'].shape[0]):,} | "
+                f"{1.0 / max(frame_dt_so_far, 1e-6):.1f} fps | "
+                f"pose buffer: {len(self.pose_buffer)}"
+            )
 
         num_gaussians = int(self.params["means3D"].shape[0])
         frame_dt = time.time() - frame_start

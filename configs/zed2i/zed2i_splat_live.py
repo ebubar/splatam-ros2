@@ -223,6 +223,9 @@ config = dict(
         # Publish the live splat render as a ROS image; view on any machine
         # with: ros2 run rqt_image_view rqt_image_view /splatam/live_render
         publish_live_render=True,
+        # Browser live 3D view + parameter panel (scripts/splat_studio.py)
+        studio=False,
+        studio_port=8080,
         render_topic="/splatam/live_render",
         render_every=1,
         render_save_every=0,  # also save every Nth render under the run dir (0=off)

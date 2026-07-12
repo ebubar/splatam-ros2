@@ -22,7 +22,11 @@ config = copy.deepcopy(_base)
 
 config["workdir"] = "./experiments/ZED2i_Captures/local_tune"
 config["run_name"] = os.environ.get("SPLATAM_RUN_NAME", "SplaTAM_local")
-config["num_frames"] = int(os.environ.get("SPLATAM_NUM_FRAMES", 150))
+# With the studio you normally stop via Save snapshot + Ctrl-C; the frame
+# cap is just a safety net.
+config["num_frames"] = int(os.environ.get("SPLATAM_NUM_FRAMES", 5000))
+config["viz"]["studio"] = True
+config["ros"]["odom_frame"] = os.environ.get("SPLATAM_ODOM_FRAME", "zed_link")
 
 config["ros"].update(
     rgb_topic="/zed/zed_node/rgb/image_rect_color",
