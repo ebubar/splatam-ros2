@@ -28,6 +28,12 @@ config["num_frames"] = int(os.environ.get("SPLATAM_NUM_FRAMES", 5000))
 config["viz"]["studio"] = True
 config["ros"]["odom_frame"] = os.environ.get("SPLATAM_ODOM_FRAME", "zed_link")
 
+# Found-good live values (camera-in-hand tuning, 2026-07-13):
+# frequent light mapping reads far better in the live view than rare heavy
+config["map_every"] = 1
+config["mapping"]["num_iters"] = 60
+config["tracking"]["num_iters"] = 30
+
 config["ros"].update(
     rgb_topic="/zed/zed_node/rgb/image_rect_color",
     rgb_info_topic="/zed/zed_node/rgb/camera_info",

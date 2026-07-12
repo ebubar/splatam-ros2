@@ -19,6 +19,16 @@ import time
 
 import numpy as np
 import torch
+import torch.nn.functional as F
+
+
+def _wxyz_to_rotmat(wxyz):
+    w, x, y, z = [float(v) for v in wxyz]
+    return np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+    ])
 
 
 def _rotmat_to_wxyz(R):
@@ -73,12 +83,15 @@ class SplatStudio:
                 initial_value=int(cfg["map_every"]))
 
         with gui.add_folder("View"):
+            self._cb_splat_render = gui.add_checkbox(
+                "splat render (rasterized)", initial_value=True)
+            self._cb_points = gui.add_checkbox("show points", initial_value=False)
             self._sl_psize = gui.add_slider(
                 "point size", min=0.002, max=0.05, step=0.002,
-                initial_value=0.008)
+                initial_value=0.02)
             self._sl_maxpts = gui.add_slider(
                 "max points (k)", min=50, max=500, step=50,
-                initial_value=250)
+                initial_value=500)
 
         with gui.add_folder("Actions"):
             self._btn_pause = gui.add_button("Pause")
@@ -94,7 +107,68 @@ class SplatStudio:
         self._btn_reset.on_click(lambda _: setattr(self, "reset_requested", True))
         self._btn_save.on_click(lambda _: setattr(self, "save_requested", True))
 
+        # Server-side splat rendering into the browser view's background,
+        # driven by the client's orbit camera (nerfstudio-viewer style)
+        self._render_lock = threading.Lock()
+        self._render_thread = threading.Thread(
+            target=self._render_loop, daemon=True)
+        self._render_thread.start()
+
         print(f"[SplatStudio] Live view: http://localhost:{port}")
+
+    def _render_loop(self):
+        from utils.recon_helpers import setup_camera
+        from diff_gaussian_rasterization import GaussianRasterizer as Renderer
+
+        W, H = 640, 360
+        # viser camera is OpenGL convention (-z forward); flip to CV (+z)
+        GL2CV = np.diag([1.0, -1.0, -1.0])
+
+        while True:
+            time.sleep(0.15)
+            if not self._cb_splat_render.value:
+                continue
+            params = getattr(self.node, "params", None)
+            if params is None:
+                continue
+            clients = list(self.server.get_clients().values())
+            if not clients:
+                continue
+            cam = clients[0].camera
+            try:
+                with torch.no_grad():
+                    R_gl = _wxyz_to_rotmat(cam.wxyz)
+                    c2w = np.eye(4)
+                    c2w[:3, :3] = R_gl @ GL2CV
+                    c2w[:3, 3] = np.array(cam.position)
+                    w2c = np.linalg.inv(c2w)
+
+                    fy = H / (2.0 * np.tan(float(cam.fov) / 2.0))
+                    k = np.array([[fy, 0, W / 2.0],
+                                  [0, fy, H / 2.0],
+                                  [0, 0, 1.0]])
+
+                    raster = setup_camera(W, H, k, w2c)
+                    rendervar = {
+                        "means3D": params["means3D"],
+                        "colors_precomp": params["rgb_colors"],
+                        "rotations": F.normalize(params["unnorm_rotations"]),
+                        "opacities": torch.sigmoid(params["logit_opacities"]),
+                        "scales": torch.exp(params["log_scales"]),
+                        "means2D": torch.zeros_like(
+                            params["means3D"], device=params["means3D"].device),
+                    }
+                    if rendervar["scales"].shape[-1] == 1:
+                        rendervar["scales"] = rendervar["scales"].tile((1, 3))
+                    im, _, _ = Renderer(raster_settings=raster)(**rendervar)
+                    rgb = (torch.clamp(im, 0, 1).permute(1, 2, 0)
+                           .mul(255).byte().cpu().numpy())
+                self.server.scene.set_background_image(
+                    rgb, format="jpeg", jpeg_quality=85)
+            except Exception:
+                # Never let a render hiccup (e.g. mid-mapping tensor resize)
+                # take down the studio; next tick retries.
+                continue
 
     # ---- GUI callbacks (viser thread) ----
 
@@ -127,6 +201,13 @@ class SplatStudio:
             return
         self._last_update = now
 
+        if not self._cb_points.value:
+            if getattr(self, "_cloud_handle", None) is not None:
+                self._cloud_handle.visible = False
+                self._cloud_handle = None
+            self._update_trail(curr_c2w)
+            return
+
         with torch.no_grad():
             means = params["means3D"]
             cols = params["rgb_colors"]
@@ -145,7 +226,7 @@ class SplatStudio:
             pts = means.detach().cpu().numpy().astype(np.float32)
             rgb = (torch.clamp(cols, 0, 1) * 255).byte().detach().cpu().numpy()
 
-        self.server.scene.add_point_cloud(
+        self._cloud_handle = self.server.scene.add_point_cloud(
             "/splat",
             points=pts,
             colors=rgb,
@@ -153,6 +234,9 @@ class SplatStudio:
             point_shape="circle",
         )
 
+        self._update_trail(curr_c2w)
+
+    def _update_trail(self, curr_c2w):
         if curr_c2w is not None:
             c2w = curr_c2w.detach().cpu().numpy() if torch.is_tensor(curr_c2w) else curr_c2w
             pos = c2w[:3, 3]
