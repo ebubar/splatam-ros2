@@ -7,7 +7,8 @@
 #
 # Then open http://localhost:8080 — orbit the growing splat, tweak
 # parameters live, Reset map between experiments, Save snapshot anytime.
-set -euo pipefail
+# Note: no -u — ROS setup.bash references unbound variables internally
+set -eo pipefail
 
 CONFIG="${1:-configs/zed2i/zed2i_local_tune.py}"
 
