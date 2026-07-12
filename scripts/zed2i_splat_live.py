@@ -13,10 +13,13 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from collections import deque
+
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
 from nav_msgs.msg import Odometry
+from geometry_msgs.msg import PoseStamped
 
 from sensor_msgs.msg import Image, CameraInfo
 from cv_bridge import CvBridge
@@ -166,14 +169,22 @@ def rotmat_to_quat_wxyz(R):
     q = q / torch.linalg.norm(q)
     return q
 
-def odom_to_c2w(odom_msg, device):
-    p = odom_msg.pose.pose.position
-    q = odom_msg.pose.pose.orientation
+def slerp_quat(q0, q1, alpha):
+    """Spherical interpolation between two xyzw quaternions (numpy)."""
+    d = float(np.dot(q0, q1))
+    if d < 0.0:
+        q1, d = -q1, -d
+    if d > 0.9995:
+        q = q0 + alpha * (q1 - q0)
+        return q / np.linalg.norm(q)
+    theta = np.arccos(np.clip(d, -1.0, 1.0))
+    s = np.sin(theta)
+    return (np.sin((1 - alpha) * theta) / s) * q0 + (np.sin(alpha * theta) / s) * q1
 
-    x = q.x
-    y = q.y
-    z = q.z
-    w = q.w
+
+def pose_to_c2w(position, quat_xyzw, device):
+    x, y, z, w = [float(v) for v in quat_xyzw]
+    p = position
 
     R = torch.tensor(
         [
@@ -187,7 +198,11 @@ def odom_to_c2w(odom_msg, device):
 
     c2w = torch.eye(4, device=device, dtype=torch.float32)
     c2w[:3, :3] = R
-    c2w[:3, 3] = torch.tensor([p.x, p.y, p.z], device=device, dtype=torch.float32)
+    c2w[:3, 3] = torch.tensor(
+        [float(p[0]), float(p[1]), float(p[2])],
+        device=device,
+        dtype=torch.float32,
+    )
 
     return c2w
 
@@ -328,21 +343,38 @@ class ZedSplatamOnline(Node):
             qos_profile=qos,
         )
 
-        self.odom_sub = Subscriber(
-            self,
-            Odometry,
-            ros_cfg["odom_topic"],
-            qos_profile=qos,
-        )
+        # Pose buffer: poses arrive on their own topic at their own rate and
+        # are interpolated to each image's exact timestamp (matching the ZED
+        # SDK's query-pose-at-frame-time semantics). Syncing odometry through
+        # the ApproximateTimeSynchronizer paired images with poses up to
+        # `slop` seconds away, which put layer-offset ghosts in the map.
+        self.pose_buffer = deque(maxlen=600)  # (t, position np[3], quat np[4] xyzw)
+        self.max_pose_age = float(ros_cfg.get("max_pose_age_s", 0.25))
+
+        pose_source = ros_cfg.get("pose_source", "odom")
+        if pose_source == "pose":
+            # ZED positional tracking output (loop-corrected, SDK-equivalent)
+            self.pose_sub = self.create_subscription(
+                PoseStamped,
+                ros_cfg.get("pose_topic", "/zed/zed_node/pose"),
+                self.pose_cb,
+                qos,
+            )
+        else:
+            self.pose_sub = self.create_subscription(
+                Odometry,
+                ros_cfg["odom_topic"],
+                self.odom_cb,
+                qos,
+            )
 
         self.ts = ApproximateTimeSynchronizer(
             [
                 self.rgb_sub,
                 self.depth_sub,
-                self.odom_sub,
             ],
             queue_size=100,
-            slop=0.15,
+            slop=0.05,
             allow_headerless=False,
         )
 
@@ -369,6 +401,51 @@ class ZedSplatamOnline(Node):
 
     def rgb_info_cb(self, msg):
         self.latest_rgb_info = msg
+
+    def odom_cb(self, msg):
+        p = msg.pose.pose.position
+        q = msg.pose.pose.orientation
+        self._push_pose(msg.header, p, q)
+
+    def pose_cb(self, msg):
+        self._push_pose(msg.header, msg.pose.position, msg.pose.orientation)
+
+    def _push_pose(self, header, p, q):
+        t = header.stamp.sec + header.stamp.nanosec * 1e-9
+        self.pose_buffer.append(
+            (t, np.array([p.x, p.y, p.z]), np.array([q.x, q.y, q.z, q.w]))
+        )
+
+    def interp_pose(self, t_img):
+        """Pose at the image timestamp: interpolate between the bracketing
+        buffer entries; fall back to the nearest entry if it is fresh."""
+        buf = list(self.pose_buffer)
+        if not buf:
+            return None
+
+        before = None
+        after = None
+        for entry in reversed(buf):
+            if entry[0] <= t_img:
+                before = entry
+                break
+        for entry in buf:
+            if entry[0] >= t_img:
+                after = entry
+                break
+
+        if before is not None and after is not None:
+            t0, p0, q0 = before
+            t1, p1, q1 = after
+            if t1 - t0 < 1e-6:
+                return p0, q0
+            a = (t_img - t0) / (t1 - t0)
+            return (1 - a) * p0 + a * p1, slerp_quat(q0, q1, a)
+
+        nearest = before or after
+        if abs(nearest[0] - t_img) <= self.max_pose_age:
+            return nearest[1], nearest[2]
+        return None
 
     def make_frame(self, rgb_msg, depth_msg, rgb_info):
         rgb_cv = self.bridge.imgmsg_to_cv2(
@@ -582,12 +659,19 @@ class ZedSplatamOnline(Node):
 
         return curr_w2c
 
-    def synced_cb(self, rgb_msg, depth_msg, odom_msg):
+    def synced_cb(self, rgb_msg, depth_msg):
         self.received_frames += 1
 
         if self.latest_rgb_info is None:
             self.get_logger().warn("Waiting for RGB CameraInfo...")
             return
+
+        t_img = rgb_msg.header.stamp.sec + rgb_msg.header.stamp.nanosec * 1e-9
+        interp = self.interp_pose(t_img)
+        if interp is None:
+            self.get_logger().warn("No pose bracketing the frame yet; skipping.")
+            return
+        pose_pos, pose_quat = interp
 
         rgb_info = self.latest_rgb_info
         # Skip fast video frames. This makes ZED behave more like iPhone frame capture.
@@ -629,14 +713,8 @@ class ZedSplatamOnline(Node):
                 depth_np,
                 rgb_info,
             )
-            self.get_logger().info(
-                f"ODOM frame_id={odom_msg.header.frame_id}, child_frame_id={odom_msg.child_frame_id}"
-            )
-
-        # self.gt_w2c_all_frames.append(torch.eye(4, device=self.device).float())
-        # curr_gt_w2c = self.gt_w2c_all_frames
-        # 1. Compute ZED-derived initial pose
-        zed_link_c2w = odom_to_c2w(odom_msg, self.device)
+        # 1. Compute ZED-derived initial pose (interpolated to the image stamp)
+        zed_link_c2w = pose_to_c2w(pose_pos, pose_quat, self.device)
         if self.cfg["ros"].get("odom_frame", "zed_link") == "optical":
             # Odometry already poses the optical frame (e.g. dataset replay)
             zed_optical_c2w = zed_link_c2w

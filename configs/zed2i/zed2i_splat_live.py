@@ -35,6 +35,12 @@ zed_depth_info_topic = "/zed/zed_node/depth/depth_registered/camera_info"
 use_odom = True
 zed_odom_topic = "/zed/zed_node/odom"
 
+# "pose": ZED positional-tracking output (loop-corrected; matches the SDK's
+#         behavior — recommended for small-scene captures)
+# "odom": raw VIO odometry (drifts over long paths; required for replay)
+zed_pose_source = "pose"
+zed_pose_topic = "/zed/zed_node/pose"
+
 # Encodings
 zed_rgb_encoding = "bgr8"
 zed_depth_encoding = "32FC1"
@@ -124,8 +130,10 @@ config = dict(
             unnorm_rotations=0.0,
             logit_opacities=0.0,
             log_scales=0.0,
-            cam_unnorm_rots=0.00005,
-            cam_trans=0.0001,
+            # Strong enough to correct residual pose-seed error (the old
+            # 5e-5/1e-4 could not move the camera meaningfully in 30 iters)
+            cam_unnorm_rots=0.0005,
+            cam_trans=0.002,
         ),
     ),
 
@@ -193,6 +201,9 @@ config = dict(
 
         use_odom=use_odom,
         odom_topic=zed_odom_topic,
+        pose_source=zed_pose_source,
+        pose_topic=zed_pose_topic,
+        max_pose_age_s=0.25,
 
         rgb_encoding=zed_rgb_encoding,
         depth_encoding=zed_depth_encoding,

@@ -95,8 +95,13 @@ The SplaTAM node subscribes to (configured in `configs/zed2i/zed2i_splat_live.py
 /zed/zed_node/odom                                 (ZED positional tracking)
 ```
 
-RGB, depth, and odometry are approximate-time synchronized. ZED odometry
-initializes each camera pose ("hybrid mode"); SplaTAM tracking then refines it.
+RGB and depth are time-synchronized; camera poses are kept in a buffer and
+**interpolated to each image's exact timestamp** (matching the ZED SDK's
+query-pose-at-frame-time behavior — pairing images with unsynchronized odom
+messages caused layer-offset ghosting). The pose source is configurable:
+`ros.pose_source="pose"` uses `/zed/zed_node/pose` (positional tracking with
+loop corrections — recommended for small-scene captures), `"odom"` uses raw
+VIO odometry. SplaTAM tracking then refines the interpolated pose.
 
 ## Configuration
 

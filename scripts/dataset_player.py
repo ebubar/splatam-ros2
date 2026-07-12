@@ -35,6 +35,11 @@ def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--dataset", required=True, help="Dataset dir with transforms.json")
     p.add_argument("--rate", type=float, default=5.0, help="Frames per second")
+    p.add_argument("--odom-rate", type=float, default=0.0,
+                   help="Publish odometry on its own timer at this rate "
+                        "(interpolated along the trajectory), with timestamps "
+                        "independent of the image stamps — like a real ZED. "
+                        "0 = publish odom together with each frame.")
     p.add_argument("--loop", action="store_true")
     p.add_argument("--rgb-topic", default="/zed/zed_node/rgb/color/rect/image")
     p.add_argument("--rgb-info-topic", default="/zed/zed_node/rgb/color/rect/image/camera_info")
@@ -104,10 +109,50 @@ class DatasetPlayer(Node):
             0.0, 0.0, 1.0,
         ]
 
+        # Precompute CV-convention c2w for the whole trajectory
+        self.c2ws = [P_GL @ np.array(fr["transform_matrix"]) @ P_GL
+                     for fr in self.frames]
+
+        self.t0 = self.get_clock().now().nanoseconds * 1e-9
         self.timer = self.create_timer(1.0 / args.rate, self.tick)
+        if args.odom_rate > 0:
+            self.odom_timer = self.create_timer(1.0 / args.odom_rate, self.odom_tick)
         self.get_logger().info(
             f"Replaying {len(self.frames)} frames from {base} at {args.rate} Hz"
+            + (f", odom at {args.odom_rate} Hz" if args.odom_rate > 0 else "")
         )
+
+    def publish_odom(self, c2w, stamp):
+        q = rotmat_to_quat_xyzw(c2w[:3, :3])
+        odom = Odometry()
+        odom.header.stamp = stamp
+        odom.header.frame_id = "odom"
+        odom.child_frame_id = "camera_optical"
+        odom.pose.pose.position.x = float(c2w[0, 3])
+        odom.pose.pose.position.y = float(c2w[1, 3])
+        odom.pose.pose.position.z = float(c2w[2, 3])
+        odom.pose.pose.orientation.x = float(q[0])
+        odom.pose.pose.orientation.y = float(q[1])
+        odom.pose.pose.orientation.z = float(q[2])
+        odom.pose.pose.orientation.w = float(q[3])
+        self.odom_pub.publish(odom)
+
+    def odom_tick(self):
+        # Continuous pose along the replay timeline, independent of frame ticks
+        now = self.get_clock().now()
+        pos = (now.nanoseconds * 1e-9 - self.t0) * self.args.rate
+        n = len(self.c2ws)
+        if self.args.loop:
+            pos = pos % (n - 1)
+        pos = min(max(pos, 0.0), n - 1.001)
+        i = int(pos)
+        a = pos - i
+        c0, c1 = self.c2ws[i], self.c2ws[i + 1]
+        c2w = np.eye(4)
+        c2w[:3, 3] = (1 - a) * c0[:3, 3] + a * c1[:3, 3]
+        # Rotation: nearest-neighbor is fine at odom rates >> frame rate
+        c2w[:3, :3] = (c0 if a < 0.5 else c1)[:3, :3]
+        self.publish_odom(c2w, now.to_msg())
 
     def tick(self):
         if self.idx >= len(self.frames):
@@ -135,21 +180,8 @@ class DatasetPlayer(Node):
         self.rgb_info_pub.publish(self.cam_info)
         self.depth_info_pub.publish(self.cam_info)
 
-        # Stored transform is OpenGL c2w; convert to CV convention
-        c2w = P_GL @ np.array(frame["transform_matrix"]) @ P_GL
-        q = rotmat_to_quat_xyzw(c2w[:3, :3])
-        odom = Odometry()
-        odom.header.stamp = stamp
-        odom.header.frame_id = "odom"
-        odom.child_frame_id = frame_id
-        odom.pose.pose.position.x = float(c2w[0, 3])
-        odom.pose.pose.position.y = float(c2w[1, 3])
-        odom.pose.pose.position.z = float(c2w[2, 3])
-        odom.pose.pose.orientation.x = float(q[0])
-        odom.pose.pose.orientation.y = float(q[1])
-        odom.pose.pose.orientation.z = float(q[2])
-        odom.pose.pose.orientation.w = float(q[3])
-        self.odom_pub.publish(odom)
+        if self.args.odom_rate <= 0:
+            self.publish_odom(self.c2ws[self.idx], stamp)
 
         self.idx += 1
 

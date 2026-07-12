@@ -23,4 +23,5 @@ config = copy.deepcopy(_base)
 config["workdir"] = "./experiments/ZED2i_Captures/replay_test"
 config["num_frames"] = int(os.environ.get("SPLATAM_NUM_FRAMES", 40))
 config["ros"]["odom_frame"] = "optical"
+config["ros"]["pose_source"] = "odom"  # dataset_player publishes Odometry
 config["viz"]["render_save_every"] = 5
