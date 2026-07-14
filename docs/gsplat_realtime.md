@@ -46,12 +46,22 @@ learned SfM front-end is required, use **MapAnything-Apache, not VGGT**.
 
 ## Run
 
-```bash
-# realtime gsplat node (edit configs/zed2i/zed2i_gsplat_live.py first)
-bash bash_scripts/zed2i_gsplat_live.bash
+Runs both locally and in Docker. gsplat needs an NVIDIA GPU (CUDA); the Docker
+`splatam`/`thor` image provides it (NGC CUDA base + `runtime: nvidia`), and ROS
+Jazzy is installed into that same container at entrypoint. The `zed_ros2`
+container is ROS/ZED-only and has no gsplat.
 
-# or directly
-python3 scripts/zed2i_gsplat_live.py --config configs/zed2i/zed2i_gsplat_live.py
+```bash
+# Local (system ROS + CUDA + torch):
+bash bash_scripts/zed2i_gsplat_live.bash
+# or: python3 scripts/zed2i_gsplat_live.py --config configs/zed2i/zed2i_gsplat_live.py
+
+# Docker (compose): the pipeline is node-selectable and backward compatible.
+#   default (unset NODE) -> original CUDA node
+#   NODE=gsplat          -> realtime gsplat node
+cd docker/demo && NODE=gsplat docker compose up
+# equivalently inside the running splatam container:
+#   NODE=gsplat bash bash_scripts/splat_pipeline_thor.bash
 ```
 
 Key config switches (`configs/zed2i/zed2i_gsplat_live.py`):

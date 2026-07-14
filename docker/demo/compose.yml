@@ -70,6 +70,8 @@ services:
       RMW_IMPLEMENTATION: "${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"
       ROS_LOCALHOST_ONLY: "0"
       NO_VIEWER: "${NO_VIEWER:-0}"
+      # NODE=gsplat runs the realtime gsplat node; default (unset) = original CUDA node.
+      NODE: "${NODE:-splatam}"
       NVIDIA_DRIVER_CAPABILITIES: "all"
       NVIDIA_VISIBLE_DEVICES: "all"
       LD_LIBRARY_PATH: "/usr/local/zed/lib:${LD_LIBRARY_PATH}"

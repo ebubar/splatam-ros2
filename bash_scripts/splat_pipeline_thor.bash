@@ -60,11 +60,21 @@ command -v python3 >/dev/null 2>&1 || {
     exit 1
 }
 
-CONFIG="configs/zed2i/zed2i_splat_live.py"
-OUTPUT="experiments/ZED2i_Captures/zed2i_ros2_demo/SplaTAM_ZED2i_ROS2/splat.ply"
+# Node/config selection (backward compatible). Default = original CUDA node.
+# Set NODE=gsplat to run the realtime gsplat node (scripts/zed2i_gsplat_live.py).
+NODE="${NODE:-splatam}"
+if [ "$NODE" = "gsplat" ]; then
+    LIVE_SCRIPT="scripts/zed2i_gsplat_live.py"
+    CONFIG="${CONFIG:-configs/zed2i/zed2i_gsplat_live.py}"
+    OUTPUT="experiments/ZED2i_Captures/zed2i_gsplat_demo/SplaTAM_ZED2i_gsplat/splat.ply"
+else
+    LIVE_SCRIPT="scripts/zed2i_splat_live.py"
+    CONFIG="${CONFIG:-configs/zed2i/zed2i_splat_live.py}"
+    OUTPUT="experiments/ZED2i_Captures/zed2i_ros2_demo/SplaTAM_ZED2i_ROS2/splat.ply"
+fi
 
 [ -f "$CONFIG" ] || { log_error "Config not found: $CONFIG"; exit 1; }
-[ -f "scripts/zed2i_splat_live.py" ] || { log_error "scripts/zed2i_splat_live.py not found"; exit 1; }
+[ -f "$LIVE_SCRIPT" ] || { log_error "$LIVE_SCRIPT not found"; exit 1; }
 [ -f "scripts/export_ply.py" ] || { log_error "scripts/export_ply.py not found"; exit 1; }
 [ -f "viz_scripts/final_recon.py" ] || { log_error "viz_scripts/final_recon.py not found"; exit 1; }
 
@@ -74,11 +84,12 @@ log_info "DISPLAY=${DISPLAY:-<empty>}"
 log_info "XDG_SESSION_TYPE=${XDG_SESSION_TYPE:-<unset>}"
 log_info "ROS_DOMAIN_ID=$ROS_DOMAIN_ID"
 
-log_info "Running live SplaTAM..."
+log_info "Running live SplaTAM... (NODE=$NODE)"
+log_info "Script: $LIVE_SCRIPT"
 log_info "Config: $CONFIG"
 log_info "Args: $*"
 
-python3 -u scripts/zed2i_splat_live.py \
+python3 -u "$LIVE_SCRIPT" \
     --config "$CONFIG" \
     "$@"
 
@@ -107,7 +118,7 @@ print_color "$success" ""
 print_color "$success" "==============================================="
 print_color "$success" "      ALL PIPELINE STAGES COMPLETED"
 print_color "$success" "==============================================="
-print_color "$success" "1. zed2i_splat_live.py"
+print_color "$success" "1. $LIVE_SCRIPT"
 print_color "$success" "2. export_ply.py"
 if [ "${NO_VIEWER}" = "1" ]; then
     print_color "$success" "3. final_recon.py skipped"
