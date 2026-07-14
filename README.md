@@ -69,6 +69,21 @@ docker build --no-cache -t splatam-clean:cu121 -f docker/Dockerfile .
 
 ./docker/run.sh
 
+## Realtime ZED2i live splatting (gsplat)
+
+This fork adds a **near-realtime, ROS2/edge live Gaussian-splatting pipeline** for
+the ZED2i, built on the SplaTAM mapping core with an Apache-2.0 **gsplat** engine
+and trusted ZED SDK poses + neural depth. It is a deployable systems integration,
+not a new method — see **[docs/gsplat_realtime.md](docs/gsplat_realtime.md)** for
+the design/licensing rationale and **[docs/running_locally.md](docs/running_locally.md)**
+for a bare-metal bring-up runbook.
+
+```bash
+# bring-up: verify both render backends on your GPU, then run
+python3 scripts/tools/render_backend_selftest.py
+python3 scripts/zed2i_gsplat_live.py --config configs/zed2i/zed2i_gsplat_desktop.py   # or ..._thor.py
+```
+
 
 ## Installation
 

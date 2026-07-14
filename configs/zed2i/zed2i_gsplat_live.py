@@ -162,6 +162,22 @@ config = dict(
         discontinuity_omega_rps=6.0,
     ),
 
+    # System hardening for long / unattended edge runs (WS7).
+    hardening=dict(
+        # Bounded memory: cap the Gaussian count and drop very transparent splats.
+        max_gaussians=1_200_000,        # 0 = unbounded; hard ceiling to avoid OOM
+        prune_opacity_below=0.005,      # 0 = disabled; remove near-invisible gaussians
+        # Adaptive mapping budget: back off iterations to hold a target rate.
+        adaptive_fps=True,
+        target_fps=0.0,                 # 0 = disabled (no throttling); e.g. 5.0 on Thor
+        min_map_iters=15,               # floor when throttling
+        # Periodic checkpoint so a long run is recoverable.
+        checkpoint_every=0,             # 0 = disabled; e.g. 100 frames
+        # Status topic for field monitoring.
+        status_topic="/splatam/status",
+        publish_status=True,
+    ),
+
     # Capture-guidance module (utils/capture_guidance.py). Off by default.
     capture_guidance=dict(
         enabled=False,

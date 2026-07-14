@@ -86,7 +86,10 @@ importable yet — fix that first; it's far cheaper to catch here than over ROS.
 
 ## 3. Point the config at your setup
 
-Edit `configs/zed2i/zed2i_gsplat_live.py`:
+Pick a hardware profile: `configs/zed2i/zed2i_gsplat_desktop.py` (x86 GPU) or
+`configs/zed2i/zed2i_gsplat_thor.py` (Jetson Thor — lower res, tighter Gaussian
+cap, FPS throttle + checkpoints). Both are thin overrides of the base
+`configs/zed2i/zed2i_gsplat_live.py`; edit that base (or your profile) to set:
 - `render_backend`  — `"gsplat"` (default) or `"cuda"` (fallback / A-B).
 - `num_frames`      — how many frames to process before saving.
 - `ros.transport`   — `"raw"` (default) or `"compressed"` (limited-bandwidth links).

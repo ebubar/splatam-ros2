@@ -45,6 +45,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Image, CompressedImage, CameraInfo
+from std_msgs.msg import String
 from cv_bridge import CvBridge
 from message_filters import Subscriber, ApproximateTimeSynchronizer
 
@@ -54,7 +55,7 @@ sys.path.insert(0, _BASE_DIR)
 from utils.common_utils import seed_everything, save_params
 from utils.keyframe_selection import keyframe_selection_overlap
 from utils.recon_helpers import setup_camera
-from utils.slam_external import build_rotation
+from utils.slam_external import build_rotation, remove_points
 from utils.pose_source import make_pose_source, ZedOdomPoseSource
 from utils.capture_guidance import CaptureGuidance
 from scripts.splatam import (
@@ -112,6 +113,15 @@ class ZedGsplatOnline(Node):
         self.async_mapping = bool(self.cfg.get("async_mapping", True))
         self.tracking_mode = self.cfg.get("tracking", {}).get("mode", "auto")
 
+        # System hardening (WS7): bounded memory, adaptive budget, checkpointing.
+        self.hcfg = self.cfg.get("hardening", {})
+        self._cur_map_iters = int(self.cfg["mapping"]["num_iters"])
+        self._base_map_iters = self._cur_map_iters
+        self._min_map_iters = int(self.hcfg.get("min_map_iters", 15))
+        self._target_fps = float(self.hcfg.get("target_fps", 0.0))
+        self._adaptive = bool(self.hcfg.get("adaptive_fps", True))
+        self._checkpoint_every = int(self.hcfg.get("checkpoint_every", 0))
+
         self.workdir = Path(self.cfg["workdir"])
         self.run_name = self.cfg.get("run_name", "SplaTAM_ZED2i_gsplat")
         self.output_dir = self.workdir / self.run_name
@@ -166,6 +176,12 @@ class ZedGsplatOnline(Node):
         )
         ros_cfg = self.cfg["ros"]
         self.transport = ros_cfg.get("transport", "raw")
+
+        # Status topic for field monitoring (WS7).
+        self.status_pub = None
+        if self.hcfg.get("publish_status", True):
+            self.status_pub = self.create_publisher(
+                String, self.hcfg.get("status_topic", "/splatam/status"), 10)
 
         # Camera intrinsics: cache the latest RGB CameraInfo (small, reliable).
         self.create_subscription(CameraInfo, ros_cfg["rgb_info_topic"],
@@ -454,8 +470,14 @@ class ZedGsplatOnline(Node):
         self.get_logger().info(
             f"Frame {self.total_frames}/{self.num_frames} | FPS={fps:.2f} | "
             f"gaussians={int(self.params['means3D'].shape[0]):,} | recv={self.received_frames} "
-            f"drop={drop}"
+            f"drop={drop} | map_iters={self._cur_map_iters}"
         )
+
+        # WS7 hardening: adapt budget, checkpoint, publish status.
+        self._adjust_budget(fps)
+        self._maybe_checkpoint(time_idx)
+        self._publish_status(fps, drop, res.quality)
+
         if self.device.type == "cuda":
             torch.cuda.empty_cache()
 
@@ -479,7 +501,7 @@ class ZedGsplatOnline(Node):
             selected.append(-1)  # current frame
 
         optimizer = initialize_optimizer(self.params, mcfg["lrs"], tracking=False)
-        for _ in range(int(mcfg["num_iters"])):
+        for _ in range(int(self._cur_map_iters)):
             kf = selected[np.random.randint(0, len(selected))]
             if kf == -1:
                 it_idx, it_color, it_depth = time_idx, color, depth
@@ -502,6 +524,89 @@ class ZedGsplatOnline(Node):
             with torch.no_grad():
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
+
+        # Bounded memory: enforce the Gaussian budget with the mapping optimizer
+        # in scope (keeps params/variables/optimizer-state consistent).
+        self._enforce_budget(optimizer)
+
+    # ------------------------------------------------------------ WS7 hardening
+    def _enforce_budget(self, optimizer):
+        """Opacity prune + hard Gaussian cap so memory stays bounded on long runs."""
+        max_g = int(self.hcfg.get("max_gaussians", 0))
+        opac_thresh = float(self.hcfg.get("prune_opacity_below", 0.0))
+        n = int(self.params["means3D"].shape[0])
+        if n == 0 or (max_g <= 0 and opac_thresh <= 0.0):
+            return
+        with torch.no_grad():
+            opac = torch.sigmoid(self.params["logit_opacities"]).squeeze(-1)  # [N]
+            to_remove = torch.zeros(n, dtype=torch.bool, device=opac.device)
+            if opac_thresh > 0.0:
+                to_remove |= (opac < opac_thresh)
+            keep = int((~to_remove).sum())
+            if max_g > 0 and keep > max_g:
+                # Drop the lowest-opacity surplus among the currently-kept splats.
+                surplus = keep - max_g
+                kept_idx = (~to_remove).nonzero(as_tuple=True)[0]
+                drop_local = torch.topk(opac[kept_idx], surplus, largest=False).indices
+                to_remove[kept_idx[drop_local]] = True
+            if bool(to_remove.any()):
+                removed = int(to_remove.sum())
+                self.params, self.variables = remove_points(
+                    to_remove, self.params, self.variables, optimizer)
+                self.get_logger().info(
+                    f"[budget] pruned {removed} gaussians -> "
+                    f"{int(self.params['means3D'].shape[0]):,}")
+
+    def _adjust_budget(self, fps):
+        """Gently adapt mapping iterations to hold a target processing rate."""
+        if not self._adaptive or self._target_fps <= 0.0 or fps <= 0.0:
+            return
+        if fps < 0.9 * self._target_fps:
+            self._cur_map_iters = max(self._min_map_iters,
+                                      int(self._cur_map_iters * 0.9))
+        elif fps > 1.2 * self._target_fps:
+            self._cur_map_iters = min(self._base_map_iters,
+                                      int(self._cur_map_iters * 1.1) + 1)
+
+    def _maybe_checkpoint(self, time_idx):
+        if self._checkpoint_every <= 0 or time_idx <= 0:
+            return
+        if (time_idx + 1) % self._checkpoint_every != 0:
+            return
+        try:
+            ckpt = dict(self.params)
+            ckpt["timestep"] = self.variables["timestep"]
+            ckpt["intrinsics"] = self.intrinsics.detach().cpu().numpy()
+            ckpt["w2c"] = self.first_frame_w2c.detach().cpu().numpy()
+            ckpt["org_width"] = self.cfg["data"]["desired_image_width"]
+            ckpt["org_height"] = self.cfg["data"]["desired_image_height"]
+            ckpt["gt_w2c_all_frames"] = np.stack(
+                [m.detach().cpu().numpy() for m in self.gt_w2c_all_frames], axis=0)
+            ckpt["keyframe_time_indices"] = np.array(self.keyframe_time_indices)
+            save_params(ckpt, str(self.output_dir))
+            self.get_logger().info(f"[checkpoint] saved at frame {time_idx + 1}")
+        except Exception as exc:
+            self.get_logger().warn(f"checkpoint failed: {exc}")
+
+    def _publish_status(self, fps, drop, quality):
+        if self.status_pub is None:
+            return
+        import json
+        msg = String()
+        msg.data = json.dumps({
+            "frame": self.total_frames,
+            "num_frames": self.num_frames,
+            "fps": round(float(fps), 2),
+            "recv": self.received_frames,
+            "drop": int(drop),
+            "gaussians": int(self.params["means3D"].shape[0]) if self.params else 0,
+            "map_iters": int(self._cur_map_iters),
+            "pose_ok": bool(quality.get("ok", False)),
+            "pose_discontinuity": bool(quality.get("discontinuity", False)),
+            "pose_stale": bool(quality.get("stale", False)),
+            "backend": self.render_backend,
+        })
+        self.status_pub.publish(msg)
 
     # ---------------------------------------------------------------- finalize
     def _finalize(self):
