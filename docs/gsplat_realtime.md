@@ -46,6 +46,10 @@ learned SfM front-end is required, use **MapAnything-Apache, not VGGT**.
 
 ## Run
 
+> For a full bare-metal bring-up (install, verify, staged debug ladder,
+> troubleshooting), see **[docs/running_locally.md](running_locally.md)** — the
+> recommended path for getting the pipeline working before adding Docker.
+
 Runs both locally and in Docker. gsplat needs an NVIDIA GPU (CUDA); the Docker
 `splatam`/`thor` image provides it (NGC CUDA base + `runtime: nvidia`), and ROS
 Jazzy is installed into that same container at entrypoint. The `zed_ros2`

@@ -40,17 +40,27 @@ print_color "$info" "[INFO] ROS_DOMAIN_ID=$ROS_DOMAIN_ID"
 
 
 # CONFIG
+# Node/config selection (backward compatible). Default = original CUDA node.
+# Set NODE=gsplat to run the realtime gsplat node (scripts/zed2i_gsplat_live.py).
 
-CONFIG="configs/zed2i/zed2i_splat_live.py"
-OUTPUT="experiments/ZED2i_Captures/zed2i_ros2_demo/SplaTAM_ZED2i_ROS2/splat.ply"
+NODE="${NODE:-splatam}"
+if [ "$NODE" = "gsplat" ]; then
+    LIVE_SCRIPT="scripts/zed2i_gsplat_live.py"
+    CONFIG="${CONFIG:-configs/zed2i/zed2i_gsplat_live.py}"
+    OUTPUT="experiments/ZED2i_Captures/zed2i_gsplat_demo/SplaTAM_ZED2i_gsplat/splat.ply"
+else
+    LIVE_SCRIPT="scripts/zed2i_splat_live.py"
+    CONFIG="${CONFIG:-configs/zed2i/zed2i_splat_live.py}"
+    OUTPUT="experiments/ZED2i_Captures/zed2i_ros2_demo/SplaTAM_ZED2i_ROS2/splat.ply"
+fi
 
 if [ ! -f "$CONFIG" ]; then
     print_color "$danger" "[ERROR] Config not found: $CONFIG"
     exit 1
 fi
 
-if [ ! -f "scripts/zed2i_splat_live.py" ]; then
-    print_color "$danger" "[ERROR] scripts/zed2i_splat_live.py not found"
+if [ ! -f "$LIVE_SCRIPT" ]; then
+    print_color "$danger" "[ERROR] $LIVE_SCRIPT not found"
     exit 1
 fi
 
@@ -64,11 +74,12 @@ if [ ! -f "viz_scripts/final_recon.py" ]; then
     exit 1
 fi
 
-print_color "$info" "[INFO] Running live SplaTAM..."
+print_color "$info" "[INFO] Running live SplaTAM... (NODE=$NODE)"
+print_color "$info" "[INFO] Script: $LIVE_SCRIPT"
 print_color "$info" "[INFO] Config: $CONFIG"
 print_color "$info" "[INFO] Args: $*"
 
-python3 -u scripts/zed2i_splat_live.py \
+python3 -u "$LIVE_SCRIPT" \
     --config "$CONFIG" \
     "$@"
 
@@ -93,7 +104,7 @@ print_color "$success" ""
 print_color "$success" "==============================================="
 print_color "$success" "      ALL PIPELINE STAGES COMPLETED"
 print_color "$success" "==============================================="
-print_color "$success" "1. ✔ zed2i_splat_live.py"
+print_color "$success" "1. ✔ $LIVE_SCRIPT"
 print_color "$success" "2. ✔ export_ply.py"
 print_color "$success" "3. ✔ final_recon.py"
 print_color "$success" ""
