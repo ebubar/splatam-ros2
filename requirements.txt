@@ -13,4 +13,11 @@ torchmetrics
 cyclonedds
 pytorch-msssim
 plyfile==0.8.1
+# CUDA rasterizer (INRIA-derived, research/non-commercial license). Kept as the
+# selectable "cuda" fallback backend only. gsplat below is the default engine.
 git+https://github.com/JonathonLuiten/diff-gaussian-rasterization-w-depth.git@cb65e4b86bc3bd8ed42174b72a62e8d3a3a71110
+# gsplat: Apache-2.0 rasterizer, default engine for the realtime gsplat node
+# (scripts/zed2i_gsplat_live.py). Builds CUDA extensions against the installed
+# torch; set TORCH_CUDA_ARCH_LIST to your GPU (e.g. 8.9/9.0 desktop, 11.0 Jetson
+# Thor) before install. On x86 a matching prebuilt wheel may be available.
+gsplat==1.4.0

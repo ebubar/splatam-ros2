@@ -33,8 +33,16 @@ from utils.slam_helpers import (
     transform_to_frame, l1_loss_v1, matrix_to_quaternion
 )
 from utils.slam_external import calc_ssim, build_rotation, prune_gaussians, densify
+from utils.render_backend import render_frame
 
-from diff_gaussian_rasterization import GaussianRasterizer as Renderer
+# The CUDA rasterizer is now invoked lazily inside utils/render_backend.py. Keep a
+# best-effort top-level import for backward compatibility, but make it optional so
+# gsplat-only environments (e.g. a Jetson Thor image where only gsplat is built)
+# can still import this module and reuse its helpers.
+try:
+    from diff_gaussian_rasterization import GaussianRasterizer as Renderer
+except Exception:  # pragma: no cover - CUDA rasterizer not installed
+    Renderer = None
 
 
 def get_dataset(config_dict, basedir, sequence, **kwargs):
@@ -214,51 +222,34 @@ def initialize_first_timestep(dataset, num_frames, scene_radius_depth_ratio,
 
 
 def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_for_loss,
-             sil_thres, use_l1, ignore_outlier_depth_loss, tracking=False, 
-             mapping=False, do_ba=False, plot_dir=None, visualize_tracking_loss=False, tracking_iteration=None):
+             sil_thres, use_l1, ignore_outlier_depth_loss, tracking=False,
+             mapping=False, do_ba=False, plot_dir=None, visualize_tracking_loss=False, tracking_iteration=None,
+             render_backend='cuda', gsplat_cfg=None):
     # Initialize Loss Dictionary
     losses = {}
 
+    # Grad gating: tracking optimizes only the camera pose; mapping optimizes the
+    # Gaussians (and the pose too when do_ba). Same gating for both backends.
     if tracking:
-        # Get current frame Gaussians, where only the camera pose gets gradient
-        transformed_gaussians = transform_to_frame(params, iter_time_idx, 
-                                             gaussians_grad=False,
-                                             camera_grad=True)
-    elif mapping:
-        if do_ba:
-            # Get current frame Gaussians, where both camera pose and Gaussians get gradient
-            transformed_gaussians = transform_to_frame(params, iter_time_idx,
-                                                 gaussians_grad=True,
-                                                 camera_grad=True)
-        else:
-            # Get current frame Gaussians, where only the Gaussians get gradient
-            transformed_gaussians = transform_to_frame(params, iter_time_idx,
-                                                 gaussians_grad=True,
-                                                 camera_grad=False)
+        gaussians_grad, camera_grad = False, True
+    elif mapping and do_ba:
+        gaussians_grad, camera_grad = True, True
     else:
-        # Get current frame Gaussians, where only the Gaussians get gradient
-        transformed_gaussians = transform_to_frame(params, iter_time_idx,
-                                             gaussians_grad=True,
-                                             camera_grad=False)
+        gaussians_grad, camera_grad = True, False
 
-    # Initialize Render Variables
-    rendervar = transformed_params2rendervar(params, transformed_gaussians)
-    depth_sil_rendervar = transformed_params2depthplussilhouette(params, curr_data['w2c'],
-                                                                 transformed_gaussians)
-
-    # RGB Rendering
-    rendervar['means2D'].retain_grad()
-    im, radius, _, = Renderer(raster_settings=curr_data['cam'])(**rendervar)
-    variables['means2D'] = rendervar['means2D']  # Gradient only accum from colour render for densification
-
-    # Depth & Silhouette Rendering
-    depth_sil, _, _, = Renderer(raster_settings=curr_data['cam'])(**depth_sil_rendervar)
-    depth = depth_sil[0, :, :].unsqueeze(0)
-    silhouette = depth_sil[1, :, :]
+    # Render through the selected backend (cuda = original two-pass rasterizer,
+    # gsplat = single Apache-2.0 rasterization call). Both return normalized outputs.
+    rendered = render_frame(params, iter_time_idx, curr_data, variables,
+                            gaussians_grad=gaussians_grad, camera_grad=camera_grad,
+                            backend=render_backend, gsplat_cfg=gsplat_cfg)
+    im = rendered['im']
+    depth = rendered['depth']
+    silhouette = rendered['silhouette']
+    uncertainty = rendered['uncertainty']
+    radius = rendered['radius']
+    if rendered['means2D'] is not None:
+        variables['means2D'] = rendered['means2D']  # gradient accum for densification (CUDA)
     presence_sil_mask = (silhouette > sil_thres)
-    depth_sq = depth_sil[2, :, :].unsqueeze(0)
-    uncertainty = depth_sq - depth**2
-    uncertainty = uncertainty.detach()
 
     # Mask with valid depth values (accounts for outlier depth values)
     nan_mask = (~torch.isnan(depth)) & (~torch.isnan(uncertainty))
@@ -341,9 +332,14 @@ def get_loss(params, curr_data, variables, iter_time_idx, loss_weights, use_sil_
     weighted_losses = {k: v * loss_weights[k] for k, v in losses.items()}
     loss = sum(weighted_losses.values())
 
-    seen = radius > 0
-    variables['max_2D_radius'][seen] = torch.max(radius[seen], variables['max_2D_radius'][seen])
-    variables['seen'] = seen
+    # Screen-space radius bookkeeping for adaptive densification. The CUDA path
+    # always returns per-Gaussian radii; gsplat returns them only in unpacked mode
+    # (and densify/prune is disabled in the live gsplat config), so guard on shape.
+    if radius is not None and 'max_2D_radius' in variables \
+            and radius.shape[0] == variables['max_2D_radius'].shape[0]:
+        seen = radius > 0
+        variables['max_2D_radius'][seen] = torch.max(radius[seen], variables['max_2D_radius'][seen])
+        variables['seen'] = seen
     weighted_losses['loss'] = loss
 
     return loss, variables, weighted_losses
@@ -377,18 +373,18 @@ def initialize_new_params(new_pt_cld, mean3_sq_dist, gaussian_distribution):
     return params
 
 
-def add_new_gaussians(params, variables, curr_data, sil_thres, 
-                      time_idx, mean_sq_dist_method, gaussian_distribution):
-    # Silhouette Rendering
-    transformed_gaussians = transform_to_frame(params, time_idx, gaussians_grad=False, camera_grad=False)
-    depth_sil_rendervar = transformed_params2depthplussilhouette(params, curr_data['w2c'],
-                                                                 transformed_gaussians)
-    depth_sil, _, _, = Renderer(raster_settings=curr_data['cam'])(**depth_sil_rendervar)
-    silhouette = depth_sil[1, :, :]
+def add_new_gaussians(params, variables, curr_data, sil_thres,
+                      time_idx, mean_sq_dist_method, gaussian_distribution,
+                      render_backend='cuda', gsplat_cfg=None):
+    # Silhouette Rendering (through the selected backend; no gradients needed here)
+    rendered = render_frame(params, time_idx, curr_data, variables,
+                            gaussians_grad=False, camera_grad=False,
+                            backend=render_backend, gsplat_cfg=gsplat_cfg)
+    silhouette = rendered['silhouette']
     non_presence_sil_mask = (silhouette < sil_thres)
     # Check for new foreground objects by using GT depth
     gt_depth = curr_data['depth'][0, :, :]
-    render_depth = depth_sil[0, :, :]
+    render_depth = rendered['depth'][0, :, :]
     depth_error = torch.abs(gt_depth - render_depth) * (gt_depth > 0)
     non_presence_depth_mask = (render_depth > gt_depth) * (depth_error > 50*depth_error.median())
     # Determine non-presence mask

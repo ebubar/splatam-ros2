@@ -48,11 +48,19 @@ RUN python -m pip install --no-cache-dir \
       plyfile==0.8.1
 
 
-ENV TORCH_CUDA_ARCH_LIST="11.0"
+# CUDA compute capability of the target GPU. Default 11.0 = Jetson Thor (Blackwell).
+# Override for a desktop build, e.g.: --build-arg CUDA_ARCH=8.9
+ARG CUDA_ARCH="11.0"
+ENV TORCH_CUDA_ARCH_LIST="${CUDA_ARCH}"
 ENV MAX_JOBS=1
 
+# CUDA rasterizer (fallback backend).
 RUN python -m pip install --no-cache-dir --no-build-isolation \
     /SplaTAM/diff-gaussian-rasterization-w-depth.git
+
+# gsplat (Apache-2.0) = default engine. Source build against the installed torch.
+RUN python -m pip install --no-cache-dir --no-build-isolation gsplat==1.4.0 && \
+    python -c "import gsplat; print('gsplat', gsplat.__version__, 'import OK')"
 
 
 COPY . /SplaTAM

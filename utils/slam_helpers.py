@@ -249,6 +249,66 @@ def transformed_params2depthplussilhouette(params, w2c, transformed_gaussians):
     return rendervar
 
 
+def build_w2c_from_cam_params(params, time_idx, camera_grad):
+    """
+    Build a 4x4 world->camera matrix from the per-frame camera pose params.
+
+    This is the single source of truth for the pose stored in
+    params['cam_unnorm_rots'] / params['cam_trans'] and is reused by the
+    gsplat rendering backend (which consumes a world->cam viewmat directly
+    instead of pre-transforming the Gaussians the way the CUDA path does).
+
+    When camera_grad is True the returned matrix carries gradients back to the
+    camera pose params (used by the optional photometric pose-refinement
+    fallback); otherwise the pose is detached.
+    """
+    if camera_grad:
+        cam_rot = F.normalize(params['cam_unnorm_rots'][..., time_idx])
+        cam_tran = params['cam_trans'][..., time_idx]
+    else:
+        cam_rot = F.normalize(params['cam_unnorm_rots'][..., time_idx].detach())
+        cam_tran = params['cam_trans'][..., time_idx].detach()
+    w2c = torch.eye(4, device=cam_tran.device, dtype=cam_tran.dtype)
+    # build_rotation expects [N, 4] and returns [N, 3, 3]; index-assignment into
+    # the eye matrix keeps the autograd graph to cam_rot/cam_tran intact.
+    w2c[:3, :3] = build_rotation(cam_rot)[0]
+    w2c[:3, 3] = cam_tran
+    return w2c
+
+
+def params2gsplat_inputs(params, gaussians_grad=True):
+    """
+    Convert the SplaTAM flat Gaussian param dict into the tensors gsplat's
+    rasterization() expects. gsplat wants:
+      means[N,3] (world), quats[N,4] wxyz (unnormalized ok), scales[N,3] RAW
+      (not log), opacities[N] (post-sigmoid), colors[N,3] (precomputed RGB).
+    SplaTAM stores log_scales and logit_opacities, so we exp()/sigmoid() here.
+    The wxyz quaternion convention matches SplaTAM's build_rotation and
+    rotmat_to_quat_wxyz, so no channel reordering is needed.
+    """
+    if params['log_scales'].shape[1] == 1:
+        log_scales = torch.tile(params['log_scales'], (1, 3))  # isotropic -> 3 equal scales
+    else:
+        log_scales = params['log_scales']
+
+    means = params['means3D']
+    quats = params['unnorm_rotations']
+    colors = params['rgb_colors']
+    logit_opac = params['logit_opacities']
+
+    if not gaussians_grad:
+        means = means.detach()
+        quats = quats.detach()
+        colors = colors.detach()
+        logit_opac = logit_opac.detach()
+        log_scales = log_scales.detach()
+
+    quats = F.normalize(quats)
+    scales = torch.exp(log_scales)
+    opacities = torch.sigmoid(logit_opac).squeeze(-1)  # [N,1] -> [N]
+    return means, quats, scales, opacities, colors
+
+
 def transform_to_frame(params, time_idx, gaussians_grad, camera_grad):
     """
     Function to transform Isotropic or Anisotropic Gaussians from world frame to camera frame.
