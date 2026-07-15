@@ -26,47 +26,17 @@ but every step also works for the original CUDA node (`scripts/zed2i_splat_live.
 
 ## 1. One-time install
 
-### 1.1 NVIDIA driver + CUDA
-Confirm the GPU is visible:
-```bash
-nvidia-smi                 # driver + GPU present
-nvcc --version             # CUDA toolkit (needed to build gsplat from source)
-```
-Note your GPU's compute capability (used for the gsplat build):
-desktop Ampere `8.6`, Ada `8.9`, Hopper `9.0`; **Jetson Thor (Blackwell) `11.0`**.
+**Full from-scratch setup (ROS + the Python virtual environment + torch + gsplat)
+lives in [docs/install.md](install.md).** Do that first if this machine isn't set
+up yet — the venv/ROS interaction (`cv_bridge` needs a `--system-site-packages`
+venv on the ROS-matching Python) is the main thing to get right.
 
-### 1.2 ROS2 + its Python bindings (via apt, not pip)
-`rclpy`, `cv_bridge`, `message_filters`, `sensor_msgs`, `nav_msgs` come from ROS,
-not pip. On the x86 PC (Humble):
+Quick path once ROS 2 + a CUDA build of torch 2.x are in place:
 ```bash
-sudo apt install ros-humble-ros-base ros-humble-cv-bridge ros-humble-message-filters
-source /opt/ros/humble/setup.bash
+source /opt/ros/<distro>/setup.bash && source ~/venvs/splatam/bin/activate
+bash bash_scripts/install.bash          # core deps + gsplat (autodetects GPU arch)
+python scripts/tools/preflight.py       # torch/CUDA, engine, ROS, config checklist
 ```
-(On Thor use `ros-jazzy-*` and `source /opt/ros/jazzy/setup.bash`.)
-
-### 1.3 Python env (conda) + torch
-```bash
-conda create -n splatam python=3.10 && conda activate splatam
-```
-**Important:** gsplat needs a modern torch/CUDA. Use **torch 2.x + CUDA 12.1**
-(the repo is tested on Torch 2.3.0 / CU121), NOT the legacy 1.12/CU11.6 default:
-```bash
-pip install torch==2.3.0 torchvision==0.18.0 --index-url https://download.pytorch.org/whl/cu121
-```
-
-### 1.4 Install deps + gsplat with the installer
-`requirements.txt` is **pure-python** (no CUDA extensions) so it can't fail on a
-build. The installer adds gsplat with the right GPU arch, and — only if you ask —
-the optional INRIA `cuda` fallback from the **vendored** `third_party/` copy (you
-do NOT need it for the default gsplat path):
-```bash
-bash bash_scripts/install.bash                     # core deps + gsplat (autodetects GPU arch)
-# bash bash_scripts/install.bash --with-cuda-fallback   # also the optional cuda fallback
-# TORCH_CUDA_ARCH_LIST=11.0 bash bash_scripts/install.bash   # override arch (e.g. Jetson Thor)
-```
-The installer verifies torch+CUDA first, warms the gsplat JIT with an `import`
-check, and runs the backend self-test at the end. If gsplat can't build, the
-`cuda` fallback (`--with-cuda-fallback`) still lets you run the pipeline (§5).
 
 ### 1.5 (Live camera only) ZED SDK + zed_wrapper
 Skip for bag replay. On the publishing machine install the ZED SDK and build the

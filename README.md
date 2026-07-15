@@ -85,11 +85,16 @@ not a new method — see **[docs/gsplat_realtime.md](docs/gsplat_realtime.md)** 
 the design/licensing rationale and **[docs/running_locally.md](docs/running_locally.md)**
 for a bare-metal bring-up runbook.
 
-**Install** (you do NOT need `diff-gaussian-rasterization` for the default gsplat
-engine — the installer handles the CUDA builds with the right GPU arch):
+**Install.** Fresh machine? Follow **[docs/install.md](docs/install.md)** — it covers
+ROS 2, the Python virtual environment (a `--system-site-packages` venv so ROS's
+`cv_bridge` imports), torch, and gsplat, for x86 (Humble/Jazzy) and Jetson Thor. In
+short (you do NOT need `diff-gaussian-rasterization` for the default gsplat engine):
 
 ```bash
-conda activate splatam                       # a Python 3.10 env with a CUDA build of torch 2.x
+source /opt/ros/<distro>/setup.bash          # humble | jazzy
+bash bash_scripts/make_venv.bash             # create the ROS-aware venv (prints next steps)
+source ~/venvs/splatam/bin/activate
+pip install torch==2.3.0 torchvision==0.18.0 --index-url https://download.pytorch.org/whl/cu121  # x86
 bash bash_scripts/install.bash               # core deps + gsplat (Apache-2.0 engine)
 # bash bash_scripts/install.bash --with-cuda-fallback   # also the optional INRIA fallback
 ```
@@ -108,12 +113,15 @@ python3 scripts/zed2i_gsplat_live.py --config configs/zed2i/zed2i_gsplat_desktop
 ##### (Recommended)
 SplaTAM has been benchmarked with Python 3.10, Torch 1.12.1 & CUDA=11.6. However, Torch 1.12 is not a hard requirement and the code has also been tested with other versions of Torch and CUDA such as Torch 2.3.0 & CUDA 12.1.
 
-The simplest way to install all dependences is to use [anaconda](https://www.anaconda.com/) and [pip](https://pypi.org/project/pip/) in the following steps: 
+> **Running the realtime ZED2i gsplat pipeline?** Use **[docs/install.md](docs/install.md)**
+> instead of the conda steps below. That pipeline needs ROS 2 + a **`--system-site-packages`
+> virtual environment** (so ROS's `cv_bridge` imports) + **torch 2.x/CUDA 12** — a plain
+> conda env does not satisfy the ROS interop, and the legacy torch 1.12 below will not
+> build gsplat. `requirements.txt` is now pure-python; CUDA builds go through
+> `bash_scripts/install.bash`.
 
-> **For the realtime gsplat pipeline** (`scripts/zed2i_gsplat_live.py`), use a
-> **modern torch/CUDA (torch 2.x + CUDA 12.1)** and the installer below — the
-> legacy torch 1.12 shown here will NOT build gsplat. `requirements.txt` is now
-> pure-python; the CUDA rasterizers are installed by `bash_scripts/install.bash`.
+The conda steps below are for the **original offline SplaTAM** (datasets/benchmarks),
+which uses the CUDA rasterizer rather than gsplat:
 
 ```bash
 conda create -n splatam python=3.10
