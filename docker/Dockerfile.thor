@@ -36,14 +36,15 @@ RUN python -m pip install --no-cache-dir \
 ENV TORCH_CUDA_ARCH_LIST="11.0"
 ENV MAX_JOBS=1
 
-# Fallback CUDA rasterizer.
-RUN python -m pip install --no-cache-dir --no-build-isolation \
-    /SplaTAM/diff-gaussian-rasterization-w-depth.git || \
-    echo "WARN: CUDA rasterizer build failed; gsplat backend still available."
-
-# Default gsplat engine (Apache-2.0), source build + AOT import check.
+# Default gsplat engine (Apache-2.0) = REQUIRED build, source + AOT import check.
 RUN python -m pip install --no-cache-dir --no-build-isolation gsplat==1.4.0 && \
     python -c "import gsplat; print('gsplat', gsplat.__version__, 'import OK on Thor')"
+
+# Optional "cuda" fallback backend, from the VENDORED copy (not the SSH submodule).
+# Non-fatal: guaranteed-buildable fallback if a gsplat aarch64 build ever regresses.
+RUN python -m pip install --no-cache-dir --no-build-isolation \
+    /SplaTAM/third_party/diff-gaussian-rasterization || \
+    echo "WARN: optional cuda fallback build failed; gsplat backend still available."
 
 COPY . /SplaTAM
 

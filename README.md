@@ -64,10 +64,17 @@
   </ol>
 </details>
 
-## New Docker Install
-docker build --no-cache -t splatam-clean:cu121 -f docker/Dockerfile .
+## Docker
 
-./docker/run.sh
+The ZED2i realtime pipeline ships a compose stack (CUDA-enabled splatting
+container + ROS/ZED container):
+
+```bash
+cd docker/demo && NODE=gsplat docker compose up      # realtime gsplat node
+```
+
+See [docs/gsplat_realtime.md](docs/gsplat_realtime.md). For bare-metal setup
+(recommended first), use `bash bash_scripts/install.bash` — see below.
 
 ## Realtime ZED2i live splatting (gsplat)
 
@@ -78,9 +85,20 @@ not a new method — see **[docs/gsplat_realtime.md](docs/gsplat_realtime.md)** 
 the design/licensing rationale and **[docs/running_locally.md](docs/running_locally.md)**
 for a bare-metal bring-up runbook.
 
+**Install** (you do NOT need `diff-gaussian-rasterization` for the default gsplat
+engine — the installer handles the CUDA builds with the right GPU arch):
+
 ```bash
-# bring-up: verify both render backends on your GPU, then run
-python3 scripts/tools/render_backend_selftest.py
+conda activate splatam                       # a Python 3.10 env with a CUDA build of torch 2.x
+bash bash_scripts/install.bash               # core deps + gsplat (Apache-2.0 engine)
+# bash bash_scripts/install.bash --with-cuda-fallback   # also the optional INRIA fallback
+```
+
+**Bring-up:**
+
+```bash
+python3 scripts/tools/preflight.py                    # checklist: torch/CUDA, engine, ROS, config
+python3 scripts/tools/render_backend_selftest.py      # verify the gsplat backend on your GPU
 python3 scripts/zed2i_gsplat_live.py --config configs/zed2i/zed2i_gsplat_desktop.py   # or ..._thor.py
 ```
 
@@ -92,12 +110,21 @@ SplaTAM has been benchmarked with Python 3.10, Torch 1.12.1 & CUDA=11.6. However
 
 The simplest way to install all dependences is to use [anaconda](https://www.anaconda.com/) and [pip](https://pypi.org/project/pip/) in the following steps: 
 
+> **For the realtime gsplat pipeline** (`scripts/zed2i_gsplat_live.py`), use a
+> **modern torch/CUDA (torch 2.x + CUDA 12.1)** and the installer below — the
+> legacy torch 1.12 shown here will NOT build gsplat. `requirements.txt` is now
+> pure-python; the CUDA rasterizers are installed by `bash_scripts/install.bash`.
+
 ```bash
 conda create -n splatam python=3.10
 conda activate splatam
-conda install -c "nvidia/label/cuda-11.6.0" cuda-toolkit
-conda install pytorch==1.12.1 torchvision==0.13.1 torchaudio==0.12.1 cudatoolkit=11.6 -c pytorch -c conda-forge
-pip install -r requirements.txt
+# modern torch for gsplat (recommended):
+pip install torch==2.3.0 torchvision==0.18.0 --index-url https://download.pytorch.org/whl/cu121
+bash bash_scripts/install.bash          # core deps + gsplat engine
+# --- OR the legacy offline-SplaTAM stack (CUDA rasterizer only, no gsplat) ---
+# conda install -c "nvidia/label/cuda-11.6.0" cuda-toolkit
+# conda install pytorch==1.12.1 torchvision==0.13.1 torchaudio==0.12.1 cudatoolkit=11.6 -c pytorch -c conda-forge
+# pip install -r requirements.txt && bash bash_scripts/install.bash --with-cuda-fallback
 ```
 
 <!-- Alternatively, we also provide a conda environment.yml file :

@@ -52,19 +52,21 @@ conda create -n splatam python=3.10 && conda activate splatam
 (the repo is tested on Torch 2.3.0 / CU121), NOT the legacy 1.12/CU11.6 default:
 ```bash
 pip install torch==2.3.0 torchvision==0.18.0 --index-url https://download.pytorch.org/whl/cu121
-pip install -r requirements.txt        # includes gsplat==1.4.0 + the CUDA fallback rasterizer
 ```
 
-### 1.4 Build gsplat for your GPU
-`requirements.txt` installs `gsplat==1.4.0`, which compiles CUDA kernels against
-your torch. Set the arch **before** install so it targets your GPU, and warm the
-JIT cache so the first frame doesn't stall:
+### 1.4 Install deps + gsplat with the installer
+`requirements.txt` is **pure-python** (no CUDA extensions) so it can't fail on a
+build. The installer adds gsplat with the right GPU arch, and — only if you ask —
+the optional INRIA `cuda` fallback from the **vendored** `third_party/` copy (you
+do NOT need it for the default gsplat path):
 ```bash
-export TORCH_CUDA_ARCH_LIST="8.9"      # desktop; use "11.0" on Jetson Thor
-python -c "import gsplat; print('gsplat', gsplat.__version__, 'OK')"
+bash bash_scripts/install.bash                     # core deps + gsplat (autodetects GPU arch)
+# bash bash_scripts/install.bash --with-cuda-fallback   # also the optional cuda fallback
+# TORCH_CUDA_ARCH_LIST=11.0 bash bash_scripts/install.bash   # override arch (e.g. Jetson Thor)
 ```
-If gsplat fails to build/import, you can still run the whole pipeline on the
-`cuda` backend (see §5) while sorting the gsplat build out separately.
+The installer verifies torch+CUDA first, warms the gsplat JIT with an `import`
+check, and runs the backend self-test at the end. If gsplat can't build, the
+`cuda` fallback (`--with-cuda-fallback`) still lets you run the pipeline (§5).
 
 ### 1.5 (Live camera only) ZED SDK + zed_wrapper
 Skip for bag replay. On the publishing machine install the ZED SDK and build the
@@ -75,12 +77,14 @@ ZED ROS2 wrapper, then launch it (see §4B).
 ## 2. Verify the install before touching ROS
 
 ```bash
-python -c "import torch; print('cuda', torch.cuda.is_available(), torch.version.cuda)"
+python scripts/tools/preflight.py            # checklist: torch/CUDA, engine, ROS, config
 python scripts/tools/render_backend_selftest.py
 ```
-The self-test renders known Gaussians through **both** backends and diffs
-RGB/depth/alpha. Expect `RESULT: PASS`. If it SKIPs, torch/CUDA/gsplat isn't
-importable yet — fix that first; it's far cheaper to catch here than over ROS.
+`preflight.py` prints PASS/FAIL for each requirement (torch+CUDA, a render engine,
+ROS python, config loads) with the fix for anything missing. The self-test then
+renders known Gaussians through **both** backends and diffs RGB/depth/alpha —
+expect `RESULT: PASS`. If it SKIPs, an engine isn't importable yet; it's far
+cheaper to catch here than over ROS.
 
 ---
 
@@ -208,7 +212,8 @@ python3 scripts/analyze_capture_pattern.py --params experiments/ZED2i_Captures/z
 |---|---|
 | Node prints "Waiting for RGB CameraInfo..." forever | camera_info topic not arriving; check `ros.rgb_info_topic` and §5.1 |
 | No frames processed at all | `ROS_DOMAIN_ID` mismatch, or 2-way RGB+depth sync never matches — widen `ros.sync_slop` |
-| `import gsplat` fails / build error | torch/CUDA too old (use torch 2.x/CU121), or wrong `TORCH_CUDA_ARCH_LIST`; fall back to `render_backend="cuda"` |
+| `pip install -r requirements.txt` fails on `diff-gaussian-rasterization` | You're on an old checkout — it's no longer in requirements. Pull latest; `requirements.txt` is pure-python and gsplat/the fallback install via `bash bash_scripts/install.bash`. You do NOT need that rasterizer for the gsplat path. |
+| `import gsplat` fails / build error | torch/CUDA too old (use torch 2.x/CU121), or wrong `TORCH_CUDA_ARCH_LIST`; re-run `bash bash_scripts/install.bash` with `TORCH_CUDA_ARCH_LIST=<your-arch>`, or fall back to `render_backend="cuda"` (`install.bash --with-cuda-fallback`) |
 | `cv_bridge` import crashes after importing torch | ROS/torch library clash — `source` ROS **before** launching python; if needed prepend HPC-X/ROS libs to `LD_LIBRARY_PATH` |
 | CUDA out of memory | lower `data.desired_image_*`, `mapping_window_size`, or `mapping.num_iters` |
 | Splat looks smeared / "drifty" | pose↔image desync — prefer `transport="compressed"` to reduce lateness, keep the timestamp/SLERP pose association (default), tighten `ros.sync_slop`; verify odom actually publishes (`ros2 topic hz /zed/zed_node/odom`) |

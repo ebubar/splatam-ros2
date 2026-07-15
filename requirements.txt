@@ -13,11 +13,18 @@ torchmetrics
 cyclonedds
 pytorch-msssim
 plyfile==0.8.1
-# CUDA rasterizer (INRIA-derived, research/non-commercial license). Kept as the
-# selectable "cuda" fallback backend only. gsplat below is the default engine.
-git+https://github.com/JonathonLuiten/diff-gaussian-rasterization-w-depth.git@cb65e4b86bc3bd8ed42174b72a62e8d3a3a71110
-# gsplat: Apache-2.0 rasterizer, default engine for the realtime gsplat node
-# (scripts/zed2i_gsplat_live.py). Builds CUDA extensions against the installed
-# torch; set TORCH_CUDA_ARCH_LIST to your GPU (e.g. 8.9/9.0 desktop, 11.0 Jetson
-# Thor) before install. On x86 a matching prebuilt wheel may be available.
-gsplat==1.4.0
+
+# ---------------------------------------------------------------------------
+# CUDA rasterizers are NOT listed here on purpose. They are CUDA extensions that
+# must be built against your installed torch + GPU arch, and pinning them here
+# makes `pip install -r requirements.txt` fail on a build step. Install them with
+# the dedicated installer, which sets TORCH_CUDA_ARCH_LIST for your GPU:
+#
+#     bash bash_scripts/install.bash                 # core deps + gsplat (default engine)
+#     bash bash_scripts/install.bash --with-cuda-fallback   # also the optional INRIA rasterizer
+#
+# - gsplat (Apache-2.0) is the DEFAULT engine for scripts/zed2i_gsplat_live.py.
+# - diff-gaussian-rasterization (INRIA, research/non-commercial) is only the
+#   optional "cuda" fallback backend, built from third_party/diff-gaussian-rasterization.
+#   You do NOT need it for the default gsplat path.
+# ---------------------------------------------------------------------------

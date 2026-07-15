@@ -54,13 +54,16 @@ ARG CUDA_ARCH="11.0"
 ENV TORCH_CUDA_ARCH_LIST="${CUDA_ARCH}"
 ENV MAX_JOBS=1
 
-# CUDA rasterizer (fallback backend).
-RUN python -m pip install --no-cache-dir --no-build-isolation \
-    /SplaTAM/diff-gaussian-rasterization-w-depth.git
-
-# gsplat (Apache-2.0) = default engine. Source build against the installed torch.
+# gsplat (Apache-2.0) = default engine and the REQUIRED build. Source build
+# against the installed torch, with an AOT import so first frame doesn't JIT-stall.
 RUN python -m pip install --no-cache-dir --no-build-isolation gsplat==1.4.0 && \
     python -c "import gsplat; print('gsplat', gsplat.__version__, 'import OK')"
+
+# Optional "cuda" fallback backend, built from the VENDORED copy (not the SSH
+# submodule). Non-fatal: the gsplat engine works without it.
+RUN python -m pip install --no-cache-dir --no-build-isolation \
+    /SplaTAM/third_party/diff-gaussian-rasterization || \
+    echo "WARN: optional cuda fallback build failed; gsplat engine still available."
 
 
 COPY . /SplaTAM

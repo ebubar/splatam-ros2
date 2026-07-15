@@ -28,8 +28,8 @@ dependencies:
     - open3d==0.16.0
     - torchmetrics
     - cyclonedds
-    # CUDA rasterizer (research/non-commercial) -> "cuda" fallback backend only.
-    - git+https://github.com/JonathonLuiten/diff-gaussian-rasterization-w-depth.git@cb65e4b86bc3bd8ed42174b72a62e8d3a3a71110
-    # gsplat (Apache-2.0) -> default engine for scripts/zed2i_gsplat_live.py.
-    # Set TORCH_CUDA_ARCH_LIST for your GPU before `conda env create`.
-    - gsplat==1.4.0
+    # NOTE: CUDA rasterizers (gsplat default engine, diff-gaussian-rasterization
+    # optional fallback) are intentionally NOT pinned here — they are CUDA builds
+    # that need TORCH_CUDA_ARCH_LIST set for your GPU. After creating this env, run:
+    #     bash bash_scripts/install.bash            # gsplat
+    #     bash bash_scripts/install.bash --with-cuda-fallback   # + optional fallback
