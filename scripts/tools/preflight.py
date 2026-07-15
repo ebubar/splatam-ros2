@@ -108,6 +108,12 @@ def main():
              detail=f"ROS_DISTRO={ros_distro or '<unset>'}",
              fix="source /opt/ros/humble/setup.bash  (or jazzy on Thor)")
 
+    # --- repo package layout (catches misnamed __init__.py / namespace collisions) ---
+    ok, err = try_import("datasets.zed_ros_dataset")
+    c.report("repo: datasets.zed_ros_dataset imports", ok, required=True, detail=err,
+             fix="run from the repo root; ensure package __init__.py files exist "
+                 "(not the mis-named _init_.py)")
+
     print()
     if c.failed_required:
         print(f"{RED}Preflight FAILED — resolve the required items above before running the node.{END}")

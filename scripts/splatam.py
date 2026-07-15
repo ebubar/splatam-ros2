@@ -21,9 +21,11 @@ import torch.nn.functional as F
 from tqdm import tqdm
 import wandb
 
-from datasets.gradslam_datasets import (load_dataset_config, ICLDataset, ReplicaDataset, ReplicaV2Dataset, AzureKinectDataset,
-                                        ScannetDataset, Ai2thorDataset, Record3DDataset, RealsenseDataset, TUMDataset,
-                                        ScannetPPDataset, NeRFCaptureDataset, Zed2iDataset)
+# NOTE: the offline benchmark dataset loaders (datasets.gradslam_datasets) are
+# imported lazily inside get_dataset() below — they pull heavy deps and are only
+# used by the offline rgbd_slam path. The realtime ROS node imports this module
+# for its helpers (get_loss, add_new_gaussians, ...) and must not drag in that
+# stack, so keep this import out of module scope.
 from utils.common_utils import seed_everything, save_params_ckpt, save_params
 from utils.eval_helpers import report_loss, report_progress, eval
 from utils.keyframe_selection import keyframe_selection_overlap
@@ -46,6 +48,10 @@ except Exception:  # pragma: no cover - CUDA rasterizer not installed
 
 
 def get_dataset(config_dict, basedir, sequence, **kwargs):
+    # Lazy import: offline benchmark loaders are only needed here (not by the live node).
+    from datasets.gradslam_datasets import (ICLDataset, ReplicaDataset, ReplicaV2Dataset, AzureKinectDataset,
+                                            ScannetDataset, Ai2thorDataset, Record3DDataset, RealsenseDataset, TUMDataset,
+                                            ScannetPPDataset, NeRFCaptureDataset, Zed2iDataset)
     if config_dict["dataset_name"].lower() in ["icl"]:
         return ICLDataset(config_dict, basedir, sequence, **kwargs)
     elif config_dict["dataset_name"].lower() in ["replica"]:
@@ -488,6 +494,7 @@ def rgbd_slam(config: dict):
         gradslam_data_cfg = {}
         gradslam_data_cfg["dataset_name"] = dataset_config["dataset_name"]
     else:
+        from datasets.gradslam_datasets import load_dataset_config  # lazy: offline path only
         gradslam_data_cfg = load_dataset_config(dataset_config["gradslam_data_cfg"])
     if "ignore_bad" not in dataset_config:
         dataset_config["ignore_bad"] = False

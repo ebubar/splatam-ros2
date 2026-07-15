@@ -6,7 +6,9 @@ from tqdm import tqdm
 import numpy as np
 import matplotlib.pyplot as plt
 
-from datasets.gradslam_datasets.geometryutils import relative_transformation
+# relative_transformation is imported lazily inside report_progress (its only
+# user) so importing this module doesn't drag in the offline gradslam dataset
+# stack — the realtime node imports scripts.splatam, which imports this module.
 from utils.recon_helpers import setup_camera
 from utils.slam_external import build_rotation, calc_psnr
 from utils.slam_helpers import (
@@ -199,6 +201,7 @@ def report_progress(params, data, i, progress_bar, iter_time_idx, sil_thres, eve
             iter_pt_error = torch.sqrt((latest_est_w2c[0,3] - iter_gt_w2c[0,3])**2 + (latest_est_w2c[1,3] - iter_gt_w2c[1,3])**2 + (latest_est_w2c[2,3] - iter_gt_w2c[2,3])**2)
             if iter_time_idx > 0:
                 # Calculate relative pose error
+                from datasets.gradslam_datasets.geometryutils import relative_transformation  # lazy
                 rel_gt_w2c = relative_transformation(gt_w2c_list[-2], gt_w2c_list[-1])
                 rel_est_w2c = relative_transformation(latest_est_w2c_list[-2], latest_est_w2c_list[-1])
                 rel_pt_error = torch.sqrt((rel_gt_w2c[0,3] - rel_est_w2c[0,3])**2 + (rel_gt_w2c[1,3] - rel_est_w2c[1,3])**2 + (rel_gt_w2c[2,3] - rel_est_w2c[2,3])**2)
