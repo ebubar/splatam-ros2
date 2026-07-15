@@ -1,3 +1,7 @@
+# numpy MUST stay <2: ROS (Humble/Jazzy) cv_bridge and other ROS C-extensions are
+# compiled against numpy 1.x; numpy 2 triggers "_ARRAY_API not found" / ABI crashes
+# when the pipeline imports cv_bridge. Do not relax this pin.
+numpy<2
 tqdm==4.65.0
 Pillow
 opencv-python

@@ -31,7 +31,10 @@ python3 -u scripts/export_ply.py "$CONFIG"
 say "$success" "[SUCCESS] PLY export complete."
 
 say "$info" "[INFO] Launching final reconstruction viewer (q/ESC to quit)..."
-python3 -u viz_scripts/final_recon.py "$CONFIG"
+# Non-fatal: the interactive viewer needs the CUDA rasterizer; on a gsplat-only
+# install it prints guidance and exits. The exported .ply is viewable externally.
+python3 -u viz_scripts/final_recon.py "$CONFIG" || \
+    say "$warn" "[WARN] viewer skipped — open the exported .ply (experiments/.../splat.ply) in an external viewer."
 
 say "$success" "==============================================="
 say "$success" "      GSPLAT PIPELINE COMPLETE ✔"

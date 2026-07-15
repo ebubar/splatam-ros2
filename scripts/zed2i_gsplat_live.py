@@ -332,7 +332,11 @@ class ZedGsplatOnline(Node):
         self.first_frame_w2c = torch.eye(4, device=self.device).float()
         W = int(self.cfg["data"]["desired_image_width"])
         H = int(self.cfg["data"]["desired_image_height"])
-        self.cam = setup_camera(W, H, K_scaled, self.first_frame_w2c.detach().cpu().numpy())
+        # setup_camera builds the CUDA rasterizer's Camera; gsplat ignores
+        # curr_data['cam'] and applies the pose via viewmats, so only build it for
+        # the cuda backend (avoids requiring diff-gaussian-rasterization on gsplat).
+        self.cam = (setup_camera(W, H, K_scaled, self.first_frame_w2c.detach().cpu().numpy())
+                    if self.render_backend == "cuda" else None)
 
         mask = (depth > 0).reshape(-1)
         init_pt_cld, mean3_sq_dist = get_pointcloud(

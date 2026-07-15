@@ -22,6 +22,15 @@ sys.path.insert(0, _BASE)
 GREEN, RED, YELLOW, END = "\033[92m", "\033[91m", "\033[93m", "\033[0m"
 
 
+def try_import(name):
+    """Actually import a module (not just find it) so ABI/runtime errors surface."""
+    try:
+        importlib.import_module(name)
+        return True, ""
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+
+
 class Check:
     def __init__(self):
         self.failed_required = False
@@ -57,10 +66,19 @@ def main():
         c.report("PyTorch + CUDA", False, required=True, detail=str(exc),
                  fix="pip install torch (CUDA build); see docs/running_locally.md")
 
-    # --- at least one render backend (required) ---
-    has_gsplat = importlib.util.find_spec("gsplat") is not None
-    has_cuda_rast = importlib.util.find_spec("diff_gaussian_rasterization") is not None
-    c.report("gsplat engine (default)", has_gsplat, required=False,
+    # --- numpy < 2 (ROS cv_bridge is built against numpy 1.x) ---
+    try:
+        import numpy as _np
+        c.report("numpy < 2 (ROS cv_bridge ABI)", _np.__version__[0] == "1", required=True,
+                 detail=f"numpy {_np.__version__}",
+                 fix="pip install 'numpy<2'  — numpy 2 breaks ROS cv_bridge (_ARRAY_API not found)")
+    except Exception as exc:
+        c.report("numpy", False, required=False, detail=str(exc))
+
+    # --- at least one render backend (required) — actually import them ---
+    has_gsplat, gerr = try_import("gsplat")
+    has_cuda_rast, _ = try_import("diff_gaussian_rasterization")
+    c.report("gsplat engine (default)", has_gsplat, required=False, detail=gerr,
              fix="bash bash_scripts/install.bash")
     c.report("cuda fallback engine (optional)", has_cuda_rast, required=False,
              fix="bash bash_scripts/install.bash --with-cuda-fallback")
@@ -80,11 +98,12 @@ def main():
 
     # --- ROS2 python (required to run the live node) ---
     ros_distro = os.environ.get("ROS_DISTRO", "")
-    for mod, required in [("rclpy", True), ("cv_bridge", True), ("message_filters", True),
-                          ("sensor_msgs.msg", True), ("nav_msgs.msg", True), ("std_msgs.msg", True)]:
-        ok = importlib.util.find_spec(mod.split(".")[0]) is not None
-        c.report(f"ROS: {mod}", ok, required=required,
-                 fix="source /opt/ros/<distro>/setup.bash  (and apt install the ros-<distro>-* packages)")
+    for mod in ["rclpy", "cv_bridge", "message_filters",
+                "sensor_msgs.msg", "nav_msgs.msg", "std_msgs.msg"]:
+        ok, err = try_import(mod)   # real import: catches the numpy-ABI cv_bridge crash
+        c.report(f"ROS: {mod}", ok, required=True, detail=err,
+                 fix="source /opt/ros/<distro>/setup.bash (apt install ros-<distro>-*); "
+                     "if cv_bridge shows a numpy ABI error, run: pip install 'numpy<2'")
     c.report("ROS environment sourced", bool(ros_distro), required=False,
              detail=f"ROS_DISTRO={ros_distro or '<unset>'}",
              fix="source /opt/ros/humble/setup.bash  (or jazzy on Thor)")

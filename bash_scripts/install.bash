@@ -99,6 +99,16 @@ else
     say "$info" "[4/4] Skipping optional cuda fallback (run with --with-cuda-fallback to include it)."
 fi
 
+# --- numpy guard ------------------------------------------------------------
+# torch/gsplat installs can pull numpy 2.x, which breaks ROS cv_bridge (built
+# against numpy 1.x). Re-assert numpy<2 as the very last dependency action.
+say "$info" "Enforcing numpy<2 (required by ROS cv_bridge)..."
+if ! "$PY" -c "import numpy,sys; sys.exit(0 if numpy.__version__[0]=='1' else 1)" 2>/dev/null; then
+    say "$warn" "    numpy>=2 detected; downgrading to numpy<2..."
+    "$PY" -m pip install "numpy<2" || say "$warn" "    numpy downgrade failed — cv_bridge may crash; pin manually: pip install 'numpy<2'"
+fi
+"$PY" -c "import numpy; print('    numpy', numpy.__version__)"
+
 # --- Self-test --------------------------------------------------------------
 say "$info" "Running backend self-test..."
 "$PY" scripts/tools/render_backend_selftest.py || say "$warn" "self-test reported issues (see above)."

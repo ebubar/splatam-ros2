@@ -9,7 +9,13 @@ from tqdm import tqdm
 from utils.recon_helpers import setup_camera
 from utils.slam_external import build_rotation,calc_psnr
 
-from diff_gaussian_rasterization import GaussianRasterizer as Renderer
+# Optional: gs_helpers is only used by the offline scripts (gaussian_splatting.py,
+# post_splatam_opt.py). Import the CUDA rasterizer lazily so importing this module
+# never hard-fails on a gsplat-only install.
+try:
+    from diff_gaussian_rasterization import GaussianRasterizer as Renderer
+except Exception:  # pragma: no cover - CUDA rasterizer not installed
+    Renderer = None
 
 from pytorch_msssim import ms_ssim
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity

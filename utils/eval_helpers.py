@@ -14,7 +14,13 @@ from utils.slam_helpers import (
     quat_mult, matrix_to_quaternion
 )
 
-from diff_gaussian_rasterization import GaussianRasterizer as Renderer
+# Optional: the CUDA rasterizer is only used by this module's eval/report helpers
+# (not by the realtime gsplat node). Import lazily so gsplat-only installs can
+# import scripts.splatam (which imports this module) without the CUDA extension.
+try:
+    from diff_gaussian_rasterization import GaussianRasterizer as Renderer
+except Exception:  # pragma: no cover - CUDA rasterizer not installed
+    Renderer = None
 
 from pytorch_msssim import ms_ssim
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity

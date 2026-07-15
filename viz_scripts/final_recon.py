@@ -13,8 +13,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 import open3d as o3d
 
-from diff_gaussian_rasterization import GaussianRasterizer as Renderer
-from diff_gaussian_rasterization import GaussianRasterizationSettings as Camera
+# This interactive viewer renders novel views with the CUDA rasterizer. Import it
+# optionally so a gsplat-only install doesn't crash the pipeline — the exported
+# .ply (scripts/export_ply.py) is still viewable in an external viewer.
+try:
+    from diff_gaussian_rasterization import GaussianRasterizer as Renderer
+    from diff_gaussian_rasterization import GaussianRasterizationSettings as Camera
+except Exception:  # pragma: no cover - CUDA rasterizer not installed
+    Renderer = None
+    Camera = None
 
 from utils.common_utils import seed_everything
 from utils.recon_helpers import setup_camera
@@ -276,6 +283,14 @@ def visualize(scene_path, cfg):
 
 
 if __name__ == "__main__":
+    if Renderer is None:
+        print("[final_recon] Interactive viewer needs the CUDA rasterizer "
+              "(diff-gaussian-rasterization), which isn't installed. Install the "
+              "optional fallback:\n    bash bash_scripts/install.bash --with-cuda-fallback\n"
+              "or view the exported .ply (scripts/export_ply.py) in an external viewer "
+              "(SuperSplat / CloudCompare).")
+        raise SystemExit(0)
+
     parser = argparse.ArgumentParser()
 
     parser.add_argument("experiment", type=str, help="Path to experiment file")

@@ -1,7 +1,21 @@
 import torch
-from diff_gaussian_rasterization import GaussianRasterizationSettings as Camera
+
+# The CUDA rasterizer's camera settings type is only needed by the "cuda" render
+# backend. Import it lazily/optionally so the default gsplat path (and gsplat-only
+# installs) don't require diff-gaussian-rasterization to be built.
+try:
+    from diff_gaussian_rasterization import GaussianRasterizationSettings as Camera
+except Exception:  # pragma: no cover - CUDA rasterizer not installed
+    Camera = None
+
 
 def setup_camera(w, h, k, w2c, near=0.01, far=100):
+    if Camera is None:
+        raise RuntimeError(
+            "setup_camera() needs the CUDA rasterizer (diff-gaussian-rasterization), "
+            "which is not installed. Use render_backend='gsplat' (default), or install "
+            "the optional fallback: bash bash_scripts/install.bash --with-cuda-fallback"
+        )
     fx, fy, cx, cy = k[0][0], k[1][1], k[0][2], k[1][2]
     w2c = torch.tensor(w2c).cuda().float()
     cam_center = torch.inverse(w2c)[:3, 3]

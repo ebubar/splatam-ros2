@@ -15,8 +15,13 @@ import open3d as o3d
 import torch
 import torch.nn.functional as F
 
-from diff_gaussian_rasterization import GaussianRasterizer as Renderer
-from diff_gaussian_rasterization import GaussianRasterizationSettings as Camera
+# Optional CUDA rasterizer (interactive viewer only) — see final_recon.py note.
+try:
+    from diff_gaussian_rasterization import GaussianRasterizer as Renderer
+    from diff_gaussian_rasterization import GaussianRasterizationSettings as Camera
+except Exception:  # pragma: no cover - CUDA rasterizer not installed
+    Renderer = None
+    Camera = None
 
 from utils.common_utils import seed_everything
 from utils.recon_helpers import setup_camera
@@ -339,6 +344,13 @@ def visualize(scene_path, cfg):
 
 
 if __name__ == "__main__":
+    if Renderer is None:
+        print("[online_recon] Interactive viewer needs the CUDA rasterizer "
+              "(diff-gaussian-rasterization). Install it with "
+              "'bash bash_scripts/install.bash --with-cuda-fallback', or view the "
+              "exported .ply in an external viewer.")
+        raise SystemExit(0)
+
     parser = argparse.ArgumentParser()
 
     parser.add_argument("experiment", type=str, help="Path to experiment file")
