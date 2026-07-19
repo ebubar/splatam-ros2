@@ -1,0 +1,41 @@
+# fastsplat GPU compute image: MapAnything (SfM) + gsplat (splatting).
+#
+# Reuses the same NVIDIA NGC PyTorch base as the SplaTAM image so torch + CUDA +
+# nvcc are already present (gsplat builds a CUDA extension at install time).
+#
+# Build:  docker build -t fastsplat:latest -f docker/Dockerfile.fastsplat .
+# Run:    ./docker/run_fastsplat.sh
+#
+# This image does NOT contain ROS. The ZED -> ROS2 (Zenoh) transfer and the
+# sparse-keyframe capture (fastsplat.ingest.ros2_capture) run in the existing
+# docker/Dockerfile.ros2_zed container and write frames to a shared volume; this
+# image consumes that folder for SfM -> object -> splat. See fastsplat/README.md.
+
+FROM nvcr.io/nvidia/pytorch:26.02-py3
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PIP_NO_CACHE_DIR=1
+# gsplat builds for the target GPU archs; override at build time if needed
+# (e.g. Orin/Thor = 8.7, Ada = 8.9, Ampere = 8.6).
+ARG TORCH_CUDA_ARCH_LIST="8.6;8.7;8.9;9.0"
+ENV TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST}
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    libgl1 \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+# Install Python deps. torch/torchvision come from the base image.
+COPY fastsplat/requirements.txt /tmp/fastsplat-requirements.txt
+RUN pip install --upgrade pip && \
+    pip install -r /tmp/fastsplat-requirements.txt
+
+COPY docker/fastsplat_entrypoint.sh /fastsplat_entrypoint.sh
+RUN chmod +x /fastsplat_entrypoint.sh
+
+# The repo is bind-mounted at /workspace at run time (see run_fastsplat.sh).
+ENTRYPOINT ["/fastsplat_entrypoint.sh"]
+CMD ["bash"]

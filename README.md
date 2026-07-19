@@ -64,7 +64,28 @@
   </ol>
 </details>
 
-## New Docker Install
+## fastsplat: fast object splats from sparse ZED images (SplaTAM-free)
+
+This branch adds **[`fastsplat`](fastsplat/README.md)** — an alternative pipeline
+that drops SplaTAM and instead reconstructs a **single object** from **sparse**
+ZED views in **≤ 5 minutes**:
+
+```
+ZED ─(ROS2/Zenoh transfer)─▶ sparse keyframes ─▶ MapAnything (SfM) ─▶ object crop/SAM2 ─▶ gsplat ─▶ .ply
+```
+
+It reuses the existing ZED → ROS2 (Zenoh) transfer, uses **MapAnything**
+(Apache-2.0) for globally-consistent feed-forward SfM — which fixes the ZED
+"ghost splats at different heights" caused by odometry drift — and **gsplat** for
+time-boxed splatting. See **[fastsplat/README.md](fastsplat/README.md)**.
+
+```bash
+docker build -t fastsplat:latest -f docker/Dockerfile.fastsplat .
+./docker/run_fastsplat.sh
+python -m fastsplat.run_pipeline --config configs/fastsplat/fastsplat.py --image-dir data/object/images
+```
+
+## New Docker Install (SplaTAM)
 docker build --no-cache -t splatam-clean:cu121 -f docker/Dockerfile .
 
 ./docker/run.sh

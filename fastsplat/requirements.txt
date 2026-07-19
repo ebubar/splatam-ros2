@@ -1,0 +1,24 @@
+# fastsplat Python dependencies.
+#
+# torch / torchvision are expected from the base image (the Docker image builds
+# on an NVIDIA NGC PyTorch container, same as the SplaTAM image). Install the
+# rest with:  pip install -r fastsplat/requirements.txt
+
+# --- Fast splatting backend ---
+gsplat>=1.4.0
+
+# --- Feed-forward SfM (Apache-2.0 checkpoint) ---
+# MapAnything is installed from source; it pulls in its own deps (huggingface_hub,
+# einops, timm, ...). Pin to a commit in production if you need reproducibility.
+map-anything @ git+https://github.com/facebookresearch/map-anything.git
+
+# --- Core ---
+numpy<2
+opencv-python-headless
+open3d>=0.18.0
+huggingface_hub
+tqdm
+pillow
+
+# --- Optional: SAM2 object segmentation (object.method = "sam2") ---
+# sam2 @ git+https://github.com/facebookresearch/sam2.git
