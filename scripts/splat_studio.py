@@ -123,9 +123,11 @@ class SplatStudio:
         W, H = 640, 360
         # viser camera is OpenGL convention (-z forward); flip to CV (+z)
         GL2CV = np.diag([1.0, -1.0, -1.0])
+        last_log = 0.0
 
         while True:
             time.sleep(0.15)
+            now = time.time()
             if not self._cb_splat_render.value:
                 continue
             params = getattr(self.node, "params", None)
@@ -165,9 +167,17 @@ class SplatStudio:
                            .mul(255).byte().cpu().numpy())
                 self.server.scene.set_background_image(
                     rgb, format="jpeg", jpeg_quality=85)
-            except Exception:
-                # Never let a render hiccup (e.g. mid-mapping tensor resize)
-                # take down the studio; next tick retries.
+                if now - last_log > 5.0:
+                    last_log = now
+                    print(f"[SplatStudio] render ok: cam={np.round(cam.position, 2)} "
+                          f"img mean={rgb.mean():.1f}", flush=True)
+            except Exception as e:
+                # Don't let a render hiccup (e.g. mid-mapping tensor resize)
+                # take down the studio, but say what happened.
+                if now - last_log > 5.0:
+                    last_log = now
+                    print(f"[SplatStudio] render error: {type(e).__name__}: {e}",
+                          flush=True)
                 continue
 
     # ---- GUI callbacks (viser thread) ----
