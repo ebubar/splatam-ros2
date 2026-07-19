@@ -77,12 +77,15 @@ ZED ─(ROS2/Zenoh transfer)─▶ sparse keyframes ─▶ MapAnything (SfM) ─
 It reuses the existing ZED → ROS2 (Zenoh) transfer, uses **MapAnything**
 (Apache-2.0) for globally-consistent feed-forward SfM — which fixes the ZED
 "ghost splats at different heights" caused by odometry drift — and **gsplat** for
-time-boxed splatting. See **[fastsplat/README.md](fastsplat/README.md)**.
+time-boxed splatting.
+
+**Docs:** [fastsplat/DOCKER.md](fastsplat/DOCKER.md) (Docker install & run,
+step-by-step) · [fastsplat/README.md](fastsplat/README.md) (design & config).
 
 ```bash
 docker build -t fastsplat:latest -f docker/Dockerfile.fastsplat .
-./docker/run_fastsplat.sh
-python -m fastsplat.run_pipeline --config configs/fastsplat/fastsplat.py --image-dir data/object/images
+./docker/run_fastsplat.sh python -m fastsplat.run_pipeline \
+    --config configs/fastsplat/fastsplat.py --image-dir data/object/images
 ```
 
 ## New Docker Install (SplaTAM)

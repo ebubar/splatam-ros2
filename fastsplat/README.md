@@ -55,8 +55,12 @@ mode is switchable:
 
 ## Install / build
 
+**➡️ Full step-by-step Docker guide: [fastsplat/DOCKER.md](DOCKER.md)** (build,
+run from a folder, run live from the ZED, troubleshooting).
+
 ```bash
-# GPU compute image (MapAnything + gsplat); no ROS inside.
+# GPU compute image (MapAnything + gsplat); no ROS inside. Build on an x86_64
+# machine with an NVIDIA dGPU (same as the SplaTAM image), not on the Jetson.
 docker build -t fastsplat:latest -f docker/Dockerfile.fastsplat .
 ./docker/run_fastsplat.sh
 ```
