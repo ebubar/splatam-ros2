@@ -56,7 +56,36 @@ min is normal. It only happens once.
 
 ---
 
-## 3. Run — Path A: from a folder of images (simplest, recommended first)
+## 3. Run — Path A: benchmark dataset (fastest smoke test)
+
+The quickest way to confirm the whole pipeline works end-to-end, with **no ZED
+and no images of your own**. This downloads a standard public dataset (the
+instant-ngp "fox", ~60 real photos) and splats it with a speed-tuned config:
+
+```bash
+./docker/run_fastsplat.sh python -m fastsplat.benchmarks --dataset fox
+```
+
+That's it — it fetches the images, runs MapAnything → object isolation → gsplat
+(~2–3 min on a modern dGPU), and writes:
+
+```
+experiments/FastSplat/benchmark_fox/splat/object_splat.ply
+```
+
+Just download the images without splatting (e.g. to inspect them):
+
+```bash
+./docker/run_fastsplat.sh python -m fastsplat.benchmarks --dataset fox --download-only
+```
+
+Config used: [`configs/fastsplat/benchmark.py`](../configs/fastsplat/benchmark.py)
+(30 frames, pure-RGB SfM, 1500 steps / 150 s budget). Once this works, move on to
+your own object below.
+
+---
+
+## 3b. Run — Path B: from a folder of images (your own object)
 
 Put a sparse set of images of your object (20–40 photos from different angles) in
 the repo, e.g. `data/mug/images/`. Then:
@@ -88,7 +117,7 @@ Intermediate outputs you can inspect:
 
 ---
 
-## 4. Run — Path B: live from the ZED (uses your existing ROS2/Zenoh transfer)
+## 4. Run — Path C: live from the ZED (uses your existing ROS2/Zenoh transfer)
 
 Two containers share a folder: the **ROS2/ZED** container captures sparse
 keyframes; the **fastsplat** container splats them.

@@ -73,6 +73,14 @@ pip install -r fastsplat/requirements.txt
 
 ## Run
 
+**Quickest smoke test — a benchmark dataset** (no ZED, no images needed):
+
+```bash
+python -m fastsplat.benchmarks --dataset fox
+# downloads the instant-ngp "fox" set and splats it (~2-3 min on a dGPU)
+# -> experiments/FastSplat/benchmark_fox/splat/object_splat.ply
+```
+
 **A) From a folder of images** (simplest — decoupled from ROS):
 
 ```bash

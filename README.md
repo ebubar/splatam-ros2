@@ -84,6 +84,9 @@ step-by-step) · [fastsplat/README.md](fastsplat/README.md) (design & config).
 
 ```bash
 docker build -t fastsplat:latest -f docker/Dockerfile.fastsplat .
+# fastest smoke test: download a benchmark dataset and splat it (~2-3 min)
+./docker/run_fastsplat.sh python -m fastsplat.benchmarks --dataset fox
+# or run on your own object images:
 ./docker/run_fastsplat.sh python -m fastsplat.run_pipeline \
     --config configs/fastsplat/fastsplat.py --image-dir data/object/images
 ```

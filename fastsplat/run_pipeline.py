@@ -31,20 +31,9 @@ def _dirs(cfg):
     }
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--config", default="configs/fastsplat/fastsplat.py")
-    ap.add_argument("--stage", default="all",
-                    help="comma-separated subset of: " + ",".join(STAGES) + " (or 'all')")
-    ap.add_argument("--image-dir", default=None, help="override ingest.image_dir")
-    args = ap.parse_args()
-
-    cfg = load_config(args.config)
-    if args.image_dir:
-        cfg["ingest"]["image_dir"] = args.image_dir
-        cfg["ingest"]["source"] = "folder"
-
-    stages = STAGES if args.stage == "all" else [s.strip() for s in args.stage.split(",")]
+def run(cfg, stages=None):
+    """Run the pipeline programmatically. Returns the output .ply path (or None)."""
+    stages = stages or STAGES
     d = _dirs(cfg)
 
     if cfg.get("overwrite") and "ingest" in stages and os.path.isdir(d["root"]):
@@ -74,6 +63,25 @@ def main():
     ply = os.path.join(d["splat"], cfg["export"]["ply_name"])
     if os.path.isfile(ply):
         print(f"[fastsplat] object splat: {ply}")
+        return ply
+    return None
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--config", default="configs/fastsplat/fastsplat.py")
+    ap.add_argument("--stage", default="all",
+                    help="comma-separated subset of: " + ",".join(STAGES) + " (or 'all')")
+    ap.add_argument("--image-dir", default=None, help="override ingest.image_dir")
+    args = ap.parse_args()
+
+    cfg = load_config(args.config)
+    if args.image_dir:
+        cfg["ingest"]["image_dir"] = args.image_dir
+        cfg["ingest"]["source"] = "folder"
+
+    stages = STAGES if args.stage == "all" else [s.strip() for s in args.stage.split(",")]
+    run(cfg, stages)
 
 
 if __name__ == "__main__":
