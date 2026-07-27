@@ -39,6 +39,16 @@ zed_odom_topic = "/zed/zed_node/odom"
 zed_rgb_encoding = "bgr8"
 zed_depth_encoding = "32FC1"
 
+# Pose seeding strategy. ZED VIO is treated as a SEED ONLY; SplaTAM's refined
+# pose is always authoritative and is what gets mapped/exported.
+#   "odom"              -> seed each frame from ZED odometry, then refine
+#   "constant_velocity" -> ignore VIO, seed from SplaTAM's own motion model
+# If your VIO is unreliable, set this to "constant_velocity" (or use_odom=False).
+pose_init = "odom"
+
+# Write a colorized depth PNG per frame (debugging only; costs real-time perf).
+save_depth_debug = False
+
 map_every = 10
 
 if num_frames < 25:
@@ -47,7 +57,7 @@ else:
     keyframe_every = 1
 
 mapping_window_size = 32
-tracking_iters = 30
+tracking_iters = 40
 mapping_iters = 180
 
 config = dict(
@@ -118,14 +128,20 @@ config = dict(
             depth=5.0,
         ),
 
+        # These LRs govern how strongly SplaTAM tracking can pull the pose OFF
+        # the (untrusted) VIO seed to correct it. The previous values
+        # (5e-5 / 1e-4) were so small the refinement could barely move, which
+        # effectively trusted VIO. Raised so dense tracking is the authority.
+        # Tune on-robot: too high -> jitter/divergence, too low -> VIO error
+        # leaks into the map.
         lrs=dict(
             means3D=0.0,
             rgb_colors=0.0,
             unnorm_rotations=0.0,
             logit_opacities=0.0,
             log_scales=0.0,
-            cam_unnorm_rots=0.00005,
-            cam_trans=0.0001,
+            cam_unnorm_rots=0.0004,
+            cam_trans=0.002,
         ),
     ),
 
@@ -192,6 +208,9 @@ config = dict(
         use_odom=use_odom,
         odom_topic=zed_odom_topic,
 
+        # Pose seeding (see notes above). VIO never contaminates the output map.
+        pose_init=pose_init,
+
         rgb_encoding=zed_rgb_encoding,
         depth_encoding=zed_depth_encoding,
 
@@ -200,7 +219,14 @@ config = dict(
 
         min_depth_m=0.3,
         max_depth_m=6.0,
-        process_every_n=1,
+
+        # ApproximateTimeSynchronizer matching tolerance between rgb/depth/odom.
+        sync_slop_s=0.15,
+
+        # Debug depth dump (off for real-time). process_every_n is deprecated:
+        # the decoupled worker already drops stale frames and always processes
+        # the freshest one, so no fixed decimation is needed.
+        save_depth_debug=save_depth_debug,
     ),
 
     viz=dict(
