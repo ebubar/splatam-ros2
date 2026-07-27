@@ -49,6 +49,12 @@ pose_init = "odom"
 # Write a colorized depth PNG per frame (debugging only; costs real-time perf).
 save_depth_debug = False
 
+# Export keyframes as a TUM RGB-D dataset for rtabmap (the data a robot ships to
+# the ground station for multi-robot loop closure / melding). depth_scale is the
+# TUM depth PNG factor: pixel_value = metres * scale (TUM convention is 5000).
+export_rtabmap = True
+rtabmap_depth_scale = 5000.0
+
 map_every = 10
 
 if num_frames < 25:
@@ -68,6 +74,9 @@ config = dict(
     num_frames=num_frames,
     seed=seed,
     primary_device=primary_device,
+
+    export_rtabmap=export_rtabmap,
+    rtabmap_depth_scale=rtabmap_depth_scale,
 
     save_stream_frames=True,
 

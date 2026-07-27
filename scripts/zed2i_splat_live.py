@@ -59,6 +59,7 @@ from utils.common_utils import seed_everything, save_params
 from utils.keyframe_selection import keyframe_selection_overlap
 from utils.recon_helpers import setup_camera
 from utils.slam_external import build_rotation, prune_gaussians, densify
+from utils.rtabmap_export import export_keyframe_dataset
 from scripts.splatam import (
     get_loss,
     initialize_optimizer,
@@ -986,6 +987,49 @@ class ZedSplatamOnline(Node):
                 json.dump(meta, f, indent=2)
         except Exception as exc:  # export must never crash the run
             self.get_logger().warn(f"Trajectory export failed: {exc}")
+
+        # --- Per-keyframe RGB-D dataset export for rtabmap ------------------ #
+        # The currency a robot ships to the ground station: keyframe RGB-D +
+        # refined poses + timestamps, as a TUM RGB-D dataset rtabmap ingests.
+        if self.cfg.get("export_rtabmap", True) and len(self.keyframe_list) > 0:
+            try:
+                K = self.intrinsics.detach().cpu().numpy()
+                fx, fy = float(K[0, 0]), float(K[1, 1])
+                cx, cy = float(K[0, 2]), float(K[1, 2])
+                W = int(self.cfg["data"]["desired_image_width"])
+                H = int(self.cfg["data"]["desired_image_height"])
+
+                kfs = []
+                for kf in self.keyframe_list:
+                    color = kf["color"].detach().clamp(0, 1)
+                    rgb = (color * 255.0).byte().permute(1, 2, 0).cpu().numpy()
+                    depth_m = kf["depth"].detach()[0].cpu().numpy()
+                    c2w = np.linalg.inv(kf["est_w2c"].detach().cpu().numpy())
+                    t = c2w[:3, 3]
+                    q = mat_to_quat_xyzw(c2w[:3, :3])
+                    kfs.append(
+                        {
+                            "stamp": kf["stamp"],
+                            "rgb": rgb,
+                            "depth": depth_m,
+                            "tum": (
+                                float(t[0]), float(t[1]), float(t[2]),
+                                float(q[0]), float(q[1]), float(q[2]), float(q[3]),
+                            ),
+                        }
+                    )
+
+                n = export_keyframe_dataset(
+                    str(self.output_dir / "rtabmap_export"),
+                    kfs, fx, fy, cx, cy, W, H,
+                    depth_scale=float(self.cfg.get("rtabmap_depth_scale", 5000.0)),
+                )
+                self.get_logger().info(
+                    f"Exported {n} keyframes for rtabmap -> "
+                    f"{self.output_dir / 'rtabmap_export'}"
+                )
+            except Exception as exc:
+                self.get_logger().warn(f"rtabmap keyframe export failed: {exc}")
 
         self.get_logger().info(f"Saved SplaTAM output to: {self.output_dir}")
         os._exit(0)

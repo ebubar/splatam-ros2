@@ -68,6 +68,7 @@ saved), the run writes, into `<workdir>/<run_name>/`:
 | `traj_tum.txt` | Per-frame trajectory, TUM format, camera-to-world |
 | `traj_keyframes_tum.txt` | Per-keyframe trajectory, TUM format |
 | `map_meta.json` | Frame counts, pose mode, world-frame + trajectory conventions |
+| `rtabmap_export/` | Per-keyframe RGB-D **TUM dataset** for rtabmap (see below) |
 
 The trajectory is TUM format (`timestamp tx ty tz qx qy qz qw`, camera-to-world)
 so it is directly consumable by `evo` and by rtabmap tooling. Every pose and
@@ -97,10 +98,36 @@ sends only latency-tolerant, map-scale data to a ground station:
 4. **Merge:** apply those transforms to place every robot's Gaussian cloud into
    one common frame.
 
-**Next step** toward this: a per-keyframe RGB-D export (images + poses +
-timestamps in an rtabmap-ingestable layout), so a robot is immediately ready to
-ship maps to the ground station. The timestamped keyframe trajectory this pass
-already emits is the seam that step plugs into.
+### Keyframe export (implemented)
+
+Each run writes `rtabmap_export/` — a **TUM RGB-D dataset** that rtabmap ingests
+directly (`utils/rtabmap_export.py`, config `export_rtabmap`):
+
+```
+rtabmap_export/
+  rgb/<stamp>.png            8-bit RGB keyframe
+  depth/<stamp>.png          16-bit depth PNG (metres * rtabmap_depth_scale, TUM=5000)
+  rgb.txt  depth.txt  associations.txt   timestamp -> file indices (1:1, synced)
+  groundtruth.txt            TUM trajectory, camera-to-world, this robot's frame
+  calibration.yaml           OpenCV-format rectified intrinsics
+  README.md                  the rtabmap commands to run
+```
+
+On the ground station, build one database per robot and merge:
+
+```bash
+# per robot
+rtabmap-rgbd_dataset --calib calibration.yaml .        # -> rtabmap.db
+# then merge (cross-session loop closure recovers inter-robot transforms)
+rtabmap-reprocess "robotA.db;robotB.db" merged.db
+```
+
+Apply the recovered transforms to place each robot's `splat.ply` into the common
+frame. Depth is metric (ZED), so the alignment is rigid — no scale solve.
+
+**Remaining for full multi-robot:** the Gaussian-merge step that consumes
+rtabmap's inter-robot transforms and fuses the `.ply` clouds (plus optional
+global refinement). That is the natural next piece to build.
 
 ## Config knobs that matter for real-time
 
@@ -111,5 +138,6 @@ already emits is the seam that step plugs into.
 - `map_every`, `keyframe_every`, `mapping_window_size` — mapping cadence/cost.
 - `ros.sync_slop_s` — rgb/depth/odom time-sync tolerance.
 - `ros.save_depth_debug` — leave `False` for real-time (per-frame PNG writes).
+- `export_rtabmap` / `rtabmap_depth_scale` — keyframe TUM-dataset export.
 - `num_frames` — currently a hard cap (pose arrays are preallocated to this
   size); set generously for long runs.
