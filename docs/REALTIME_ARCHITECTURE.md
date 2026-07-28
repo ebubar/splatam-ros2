@@ -131,6 +131,9 @@ global refinement). That is the natural next piece to build.
 
 ## Config knobs that matter for real-time
 
+- `ros.use_compressed` — subscribe to JPEG/`compressedDepth` topics (~30 Mbps)
+  instead of raw Image (~210 Mbps). Required for WiFi / edge deployment; decode
+  happens in the worker on the freshest frame only.
 - `ros.pose_init` — `"odom"` vs `"constant_velocity"`.
 - `ros.use_odom` — `False` drops VIO from the sync entirely.
 - `tracking.num_iters`, `mapping.num_iters` — the dominant per-frame cost.

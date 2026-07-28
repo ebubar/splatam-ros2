@@ -1,61 +1,60 @@
-# Full-stack setup: Orin NX (ZED) → home network → SplaTAM
+# Full-stack setup: Orin NX (ZED) → WiFi → SplaTAM (edge deployment)
 
-Two machines:
+Two machines, talking over ROS 2 DDS on WiFi:
 
-- **Orin NX — sensor side.** Runs the ZED camera + `zed-ros2-wrapper`, publishes
-  RGB / depth / odom onto the LAN.
-- **Splatting machine — SLAM side.** x86_64 + NVIDIA GPU. Runs this repo's live
-  SplaTAM, subscribing to the Orin's topics over the network.
+- **Orin NX — sensor side (on the robot).** Runs the ZED camera +
+  `zed-ros2-wrapper`, publishes **compressed** RGB / depth + odom onto the LAN.
+- **Splatting machine — SLAM side (ground station).** x86_64 + NVIDIA GPU. Runs
+  this repo's live SplaTAM, subscribing over WiFi.
 
-They talk over ROS 2 DDS on your home network. Nothing but ROS topics crosses
-the wire.
+This is an **edge deployment**: the Orin is on a moving robot, so the link is
+wireless. The whole stack is tuned for that — compressed transport plus a
+pipeline that always processes the freshest frame and drops the rest.
 
 ---
 
-## 0. The one decision that determines success tonight: wired vs Wi-Fi
+## 0. Why this works over WiFi
 
-SplaTAM here subscribes to **raw** (uncompressed) image topics. At ZED **VGA
-(672×376) @ 15 fps** that is roughly:
+Raw image topics are ~210 Mbps at VGA@15 — a non-starter on WiFi. **Compressed
+transport** (JPEG RGB + `compressedDepth` PNG) cuts that to **~25–30 Mbps at
+VGA@15**, which sits comfortably inside real 5 GHz WiFi. Two design choices carry
+the rest:
 
-| stream | per frame | @15 fps |
-|--------|-----------|---------|
-| RGB (bgr8) | ~0.76 MB | ~91 Mbps |
-| depth (32FC1) | ~1.0 MB | ~121 Mbps |
-| **total** | | **~210 Mbps** |
+- **`use_compressed=True`** (default in `configs/zed2i/zed2i_splat_live.py`) —
+  the SLAM node subscribes to the compressed topics and decodes them itself, in
+  the worker thread, on only the freshest frame.
+- **Decoupled, freshest-frame processing** — WiFi jitter and dropped frames don't
+  stall SLAM; each frame logs how many it dropped, so you can read link health
+  live. This is safe because the pose is anchored to ZED odom, not to
+  frame-to-frame continuity.
 
-- **Wired gigabit Ethernet (strongly recommended for the first working run):**
-  handles this with headroom. Do this tonight. Everything below assumes it.
-- **Wi-Fi:** 5 GHz real-world throughput (~200–400 Mbps) makes raw VGA@15
-  marginal — it may work, but expect jitter. The pipeline tolerates jitter (it
-  always processes the freshest frame and drops the rest), but saturated
-  bandwidth means growing latency. **If you must use Wi-Fi, drop the ZED frame
-  rate to ~5 fps** (see Part A) — raw VGA@5 is ~70 Mbps and fits comfortably.
-  A compressed-transport option for full-rate Wi-Fi is in Part E.
+Keep both machines on **5 GHz**. VGA@15 is the reliable default; you can push to
+HD720 later if the link is strong (compressed HD720 ≈ 40–60 Mbps).
 
 ---
 
 ## Part A — Orin NX (sensor side)
 
-Assumes JetPack is already flashed (gives you Ubuntu 22.04, CUDA, cuDNN).
+Assumes JetPack is flashed (Ubuntu 22.04, CUDA, cuDNN).
 
 ### A1. ZED SDK
-Install the **ZED SDK for your exact JetPack version** from
-<https://www.stereolabs.com/developers/release>. Match the versions — a
-mismatched SDK/JetPack is the most common ZED-on-Jetson failure.
-```bash
-chmod +x ZED_SDK_Tegra_*.run && ./ZED_SDK_Tegra_*.run
-# verify the camera:
-/usr/local/zed/tools/ZED_Explorer
-```
+Install the **ZED SDK matching your exact JetPack version** from
+<https://www.stereolabs.com/developers/release> (a mismatch is the #1 ZED-on-Jetson
+failure). Verify: `/usr/local/zed/tools/ZED_Explorer`.
 
-### A2. ROS 2 Humble
+### A2. ROS 2 Humble + the compression plugins (critical)
 ```bash
-sudo apt update && sudo apt install -y software-properties-common curl
-# add the ROS 2 apt repo per docs.ros.org (Humble, Ubuntu 22.04), then:
-sudo apt install -y ros-humble-ros-base python3-colcon-common-extensions python3-rosdep
+sudo apt update
+sudo apt install -y ros-humble-ros-base python3-colcon-common-extensions python3-rosdep \
+    ros-humble-compressed-image-transport \
+    ros-humble-compressed-depth-image-transport
 sudo rosdep init 2>/dev/null; rosdep update
 echo 'source /opt/ros/humble/setup.bash' >> ~/.bashrc && source ~/.bashrc
 ```
+Those two `*-transport` plugins are what make the `/compressed` and
+`/compressedDepth` topics exist. **Without them there is no compressed stream**
+and you're back to 210 Mbps. They compress on the *publisher* side, so they must
+be on the **Orin**.
 
 ### A3. Build the ZED ROS 2 wrapper
 ```bash
@@ -67,191 +66,195 @@ colcon build --symlink-install
 echo 'source ~/ros2_ws/install/setup.bash' >> ~/.bashrc && source ~/.bashrc
 ```
 
-### A4. Network identity (do this on BOTH machines, same value)
+### A4. Network identity + WiFi-friendly DDS (do the matching parts on BOTH machines)
 ```bash
-echo 'export ROS_DOMAIN_ID=77' >> ~/.bashrc && source ~/.bashrc
+echo 'export ROS_DOMAIN_ID=77' >> ~/.bashrc          # SAME on both machines
+# WiFi APs often drop DDS multicast, so use CycloneDDS with explicit peers:
+sudo apt install -y ros-humble-rmw-cyclonedds-cpp
+echo 'export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp' >> ~/.bashrc
+cat > ~/cyclonedds.xml <<'XML'
+<CycloneDDS><Domain>
+  <General><Interfaces><NetworkInterface name="wlan0"/></Interfaces></General>
+  <Discovery><ParticipantIndex>auto</ParticipantIndex><Peers>
+    <Peer address="ORIN_IP"/>
+    <Peer address="SPLAT_IP"/>
+  </Peers></Discovery>
+</Domain></CycloneDDS>
+XML
+echo 'export CYCLONEDDS_URI=file://'$HOME'/cyclonedds.xml' >> ~/.bashrc
+source ~/.bashrc
 ```
-Give the Orin a stable IP (DHCP reservation on your router, or static). Note it
-— e.g. `192.168.1.50`.
+Put the real IPs in the file, set the correct WiFi interface name (`ip a` to
+check — often `wlan0`), and use this same config (with the same two peers) on the
+splatting machine. Give the Orin a stable IP (router DHCP reservation).
 
 ### A5. Launch the ZED node (positional tracking ON — SplaTAM seeds from odom)
-```bash
-ros2 launch zed_wrapper zed_camera.launch.py \
-    camera_model:=zed2i \
-    pos_tracking_mode:=GEN_3
-```
-**Lower the rate/resolution** via an override file (recommended for network).
 Create `~/zed_override.yaml`:
 ```yaml
 /**:
   ros__parameters:
     general:
-      grab_resolution: 'VGA'      # smallest; 'HD720' if you're wired and want more
-      grab_frame_rate: 15          # set to 5 for Wi-Fi
+      grab_resolution: 'VGA'       # reliable WiFi default; 'HD720' if the link is strong
+      grab_frame_rate: 15
 ```
-and launch with `ros_params_override_path:=$HOME/zed_override.yaml` added.
-
-### A6. Confirm it's publishing (on the Orin)
+Launch:
 ```bash
-ros2 topic hz /zed/zed_node/rgb/color/rect/image
-ros2 topic hz /zed/zed_node/depth/depth_registered
-ros2 topic hz /zed/zed_node/odom          # must be alive — needs pos_tracking
+ros2 launch zed_wrapper zed_camera.launch.py \
+    camera_model:=zed2i \
+    pos_tracking_mode:=GEN_3 \
+    ros_params_override_path:=$HOME/zed_override.yaml
 ```
+
+### A6. Confirm the COMPRESSED topics exist and tick (on the Orin)
+```bash
+ros2 topic hz /zed/zed_node/rgb/color/rect/image/compressed
+ros2 topic hz /zed/zed_node/depth/depth_registered/compressedDepth
+ros2 topic hz /zed/zed_node/odom
+```
+All three must report a steady rate. If the `/compressed*` topics are missing,
+the transport plugins (A2) aren't installed.
 
 ---
 
-## Part B — Splatting machine (SLAM side)
+## Part B — Splatting machine (SLAM side / ground station)
 
-Target stack (known-good this session): **Ubuntu 22.04, Python 3.10, ROS 2
-Humble, torch 2.3.0+cu121, CUDA toolkit 12.1.** Keeping Python 3.10 + Humble
-matches the Orin and lets the venv see system `rclpy`.
+Target stack (known-good): **Ubuntu 22.04, Python 3.10, ROS 2 Humble,
+torch 2.3.0+cu121, CUDA toolkit 12.1.**
 
-### B1. NVIDIA driver
+### B1. Driver
 ```bash
-nvidia-smi        # must work. If not, install the driver and reboot first.
+nvidia-smi        # must work; install driver + reboot if not
 ```
 
 ### B2. ROS 2 Humble
 ```bash
 sudo apt install -y ros-humble-desktop python3-colcon-common-extensions \
-    ros-humble-cv-bridge ros-humble-image-transport ros-humble-message-filters
+    ros-humble-cv-bridge ros-humble-image-transport ros-humble-message-filters \
+    ros-humble-rmw-cyclonedds-cpp
 echo 'source /opt/ros/humble/setup.bash' >> ~/.bashrc && source ~/.bashrc
-echo 'export ROS_DOMAIN_ID=77' >> ~/.bashrc && source ~/.bashrc   # MATCH the Orin
 ```
+Then set the **same** `ROS_DOMAIN_ID=77`, `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`,
+and `CYCLONEDDS_URI` (same peers file, correct local interface) as in A4.
 
 ### B3. CUDA toolkit 12.1 (provides nvcc to build the rasterizer)
-pip-torch ships the CUDA *runtime* but not `nvcc`. Install the matching toolkit:
 ```bash
 DISTRO=ubuntu2204
 wget https://developer.download.nvidia.com/compute/cuda/repos/$DISTRO/x86_64/cuda-keyring_1.1-1_all.deb
 sudo dpkg -i cuda-keyring_1.1-1_all.deb
-sudo apt-get update
-sudo apt-get install -y cuda-toolkit-12-1     # NOT "cuda" (that pulls a driver)
+sudo apt-get update && sudo apt-get install -y cuda-toolkit-12-1   # NOT "cuda"
 cat >> ~/.bashrc <<'EOF'
 export CUDA_HOME=/usr/local/cuda-12.1
 export PATH=$CUDA_HOME/bin:$PATH
 export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
 EOF
-source ~/.bashrc
-nvcc --version        # must print release 12.1
+source ~/.bashrc && nvcc --version     # must print release 12.1
 ```
 
-### B4. Clone this repo (the working branch)
+### B4. Clone this repo (working branch)
 ```bash
-cd ~
-git clone https://github.com/ebubar/splatam-ros2.git
-cd splatam-ros2
-git checkout claude/splatam-realtime-performance-lyjvzj
+cd ~ && git clone https://github.com/ebubar/splatam-ros2.git
+cd splatam-ros2 && git checkout claude/splatam-realtime-performance-lyjvzj
 ```
 
 ### B5. Python env — venv with system site-packages (so it sees ROS `rclpy`)
 ```bash
-python3 -m venv --system-site-packages ~/venvs/splatam   # --system-site-packages is REQUIRED
+python3 -m venv --system-site-packages ~/venvs/splatam     # --system-site-packages REQUIRED
 source ~/venvs/splatam/bin/activate
 pip install --upgrade pip setuptools wheel
 pip install torch==2.3.0 torchvision==0.18.0 --index-url https://download.pytorch.org/whl/cu121
-pip install -r requirements.txt        # installs deps AND builds the rasterizer from git
-```
-If the rasterizer line in `requirements.txt` fails to build, build the vendored
-copy explicitly (same code, offline, forced to use the venv's torch):
-```bash
+pip install -r requirements.txt          # deps + builds the rasterizer
+# if the rasterizer git build fails, build the vendored copy against the venv torch:
 pip install --no-build-isolation ./third_party/diff-gaussian-rasterization/
 ```
 
-### B6. Verify the whole import chain (this is the gate)
+### B6. Verify the import chain (the gate — do this before touching the network)
 ```bash
-source /opt/ros/humble/setup.bash
-source ~/venvs/splatam/bin/activate
+source /opt/ros/humble/setup.bash && source ~/venvs/splatam/bin/activate
 python3 -c "import torch, diff_gaussian_rasterization, rclpy, cv2, cv_bridge, message_filters; \
 from datasets.gradslam_datasets import load_dataset_config; \
-print('STACK OK | cuda', torch.cuda.is_available())"
+print('STACK OK | cuda', torch.cuda.is_available())"     # -> STACK OK | cuda True
 ```
-Must print `STACK OK | cuda True`. (Run it from the repo root so `datasets`
-resolves to the repo.)
 
 ---
 
-## Part C — Connect the two over the network
+## Part C — Connect the two over WiFi
 
-1. **Same `ROS_DOMAIN_ID`** on both (77 above). Same subnet.
-2. From the **splatting machine**, confirm you can see the Orin's topics:
+1. Same `ROS_DOMAIN_ID`, same `RMW_IMPLEMENTATION`, same CycloneDDS peers on both.
+2. From the **splatting machine**, confirm you receive the compressed streams:
    ```bash
-   ros2 topic list | grep zed            # should list /zed/zed_node/...
-   ros2 topic hz /zed/zed_node/rgb/color/rect/image   # should tick at the Orin's rate
+   ros2 topic list | grep zed
+   ros2 topic hz /zed/zed_node/rgb/color/rect/image/compressed
+   ros2 topic hz /zed/zed_node/depth/depth_registered/compressedDepth
+   ros2 topic hz /zed/zed_node/odom
    ```
-   If the list is empty, DDS discovery isn't crossing the network — see Part E.
-3. Clock skew between machines does **not** break frame sync: RGB, depth, and
-   odom are all timestamped on the Orin, and the synchronizer only compares
-   those three to each other. (NTP is still nice to have.)
+   All three ticking = you're ready. Empty list = DDS discovery isn't crossing
+   (re-check the peers file and interface names in A4).
+3. Clock skew between machines does **not** break frame sync — RGB, depth, and
+   odom are all stamped on the Orin, and the synchronizer only compares those
+   three to each other.
 
 ---
 
 ## Part D — Run it
 
-On the **splatting machine**, repo root, both ROS and the venv sourced:
+On the **splatting machine**, repo root, ROS + venv sourced:
 ```bash
 cd ~/splatam-ros2
 bash bash_scripts/zed2i_live.bash
 ```
-This runs live SLAM (45 frames, then saves & exits), exports `splat.ply`, and
-opens the viewer. **Move the ZED slowly and smoothly.**
+Startup log should say `Transport: compressed`. Move the ZED slowly.
 
-**What good looks like** — log lines:
+**What good looks like:**
 ```
-Frame 12/45 | FPS=3.20 | dropped=4 | gaussians=142,318
+Transport: compressed
+Frame 12/45 | FPS=3.10 | dropped=6 | gaussians=138,402
 ```
-`dropped>0` is normal over a network (SLAM is slower than the camera; it takes
-the freshest frame). `gaussians` climbs; the viewer shows a coherent scene.
+`dropped>0` is expected and healthy over WiFi (SLAM is slower than the camera; it
+takes the newest frame). `gaussians` climbs; the viewer shows a coherent scene.
 
-**Outputs** land in
-`experiments/ZED2i_Captures/zed2i_ros2_demo/SplaTAM_ZED2i_ROS2/`:
-`splat.ply`, `traj_tum.txt`, `map_meta.json`, and `rtabmap_export/` (the
-per-keyframe TUM dataset for multi-robot melding).
-
-Tuning knobs (`configs/zed2i/zed2i_splat_live.py`) and the pose-seed modes are
-documented in `docs/RUN_SINGLE_ROBOT_TEST.md` §6 and
-`docs/REALTIME_ARCHITECTURE.md`.
+**Outputs:** `experiments/ZED2i_Captures/zed2i_ros2_demo/SplaTAM_ZED2i_ROS2/` —
+`splat.ply`, `traj_tum.txt`, `map_meta.json`, and `rtabmap_export/`.
 
 ---
 
 ## Part E — Troubleshooting
 
-**`ros2 topic list` on the splatting machine doesn't show the Orin's topics.**
-DDS discovery isn't crossing the LAN (often Wi-Fi APs blocking multicast). Fix by
-forcing CycloneDDS with an explicit unicast peer on **both** machines:
+**`/compressed` or `/compressedDepth` topics don't exist** — the transport
+plugins aren't on the Orin. Install `ros-humble-compressed-image-transport` and
+`ros-humble-compressed-depth-image-transport` (A2) and relaunch the ZED node.
+
+**`ros2 topic list` on the splatting machine is empty** — DDS discovery isn't
+crossing WiFi. Confirm both machines share `ROS_DOMAIN_ID`,
+`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`, and a `cyclonedds.xml` listing both real
+IPs with the correct WiFi interface name. Ping each way to confirm basic
+reachability first.
+
+**Node logs `Waiting for RGB CameraInfo...` forever** — the camera-info topic
+name is wrong for your ZED build. Find it and set `ros.rgb_info_topic`:
 ```bash
-sudo apt install -y ros-humble-rmw-cyclonedds-cpp
-export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-cat > ~/cyclonedds.xml <<'XML'
-<CycloneDDS><Domain><Discovery><Peers>
-  <Peer address="ORIN_IP"/>
-  <Peer address="SPLAT_IP"/>
-</Peers></Discovery></Domain></CycloneDDS>
-XML
-export CYCLONEDDS_URI=file://$HOME/cyclonedds.xml
+ros2 topic list | grep camera_info
 ```
-Put both real IPs in the file, set these on both machines, relaunch everything.
 
-**Frames arrive but the run stalls / `dropped` climbs forever with low FPS on
-Wi-Fi.** Bandwidth-bound. Either go wired, or drop `grab_frame_rate` to 5 on the
-Orin, or use compressed transport: on the splatting machine, relay the small
-compressed topics to local raw topics with `ros2 run image_transport republish`,
-remap the outputs to `/splat/rgb` and `/splat/depth`, and point the config's
-`ros.rgb_topic` / `ros.depth_topic` at those. (This trades a code-free setup for
-much lower bandwidth.)
+**Frames arrive but FPS is very low / `dropped` enormous** — link is
+saturated or lossy. Drop `grab_frame_rate` to 10 or 5, or lower JPEG quality on
+the Orin (image_transport `.../compressed` `jpeg_quality` param, e.g. 60). VGA
+before HD720.
 
-**`No module named diff_gaussian_rasterization`** — the rasterizer didn't build;
-`nvcc` was missing or mismatched. Redo B3, then B5's `--no-build-isolation` line.
+**Depth looks wrong / decode errors in compressed mode** — the ZED's
+`compressedDepth` format varies (16UC1 mm vs 32FC1 quantized). The decoder
+handles both; if you see `Unsupported depth encoding`, note the `format` string
+in the error and send it. As a quick test, set `use_compressed=False` on a wired
+link to isolate transport from geometry.
 
-**`No module named 'datasets.gradslam_datasets'`** — you're on an old checkout;
-this branch already fixes it (the package `__init__.py` rename). `git pull`.
+**`No module named diff_gaussian_rasterization`** — rasterizer didn't build;
+`nvcc` missing/mismatched. Redo B3, then B5's `--no-build-isolation` line.
 
-**`import rclpy` fails inside the venv** — the venv wasn't created with
-`--system-site-packages`. Recreate it (B5).
+**`No module named 'datasets.gradslam_datasets'`** — old checkout; this branch
+fixes it (`git pull`).
 
-**Build error "unsupported GNU version" (Ubuntu 24.04 / gcc 13)** — CUDA 12.1
-wants gcc ≤ 12: `sudo apt install -y gcc-12 g++-12` then rebuild with
-`CC=gcc-12 CXX=g++-12 pip install --no-build-isolation ./third_party/diff-gaussian-rasterization/`.
+**`import rclpy` fails in the venv** — venv wasn't `--system-site-packages`;
+recreate it (B5).
 
-**Splat looks smeared / drifts** — the VIO-seed vs tracking balance; adjust
+**Splat smeared / drifts** — VIO-seed vs tracking balance; adjust
 `tracking.lrs.cam_trans` / `cam_unnorm_rots` per `docs/RUN_SINGLE_ROBOT_TEST.md` §6.
+```

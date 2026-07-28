@@ -32,6 +32,13 @@ zed_rgb_info_topic = "/zed/zed_node/rgb/color/rect/image/camera_info"
 zed_depth_topic = "/zed/zed_node/depth/depth_registered"
 zed_depth_info_topic = "/zed/zed_node/depth/depth_registered/camera_info"
 
+# Transport. Compressed is REQUIRED for WiFi / edge deployment: it moves JPEG
+# RGB + compressedDepth (~30 Mbps) instead of raw Image (~210 Mbps). Set False
+# only on a wired LAN where you specifically want uncompressed frames.
+use_compressed = True
+zed_rgb_compressed_topic = zed_rgb_topic + "/compressed"
+zed_depth_compressed_topic = zed_depth_topic + "/compressedDepth"
+
 use_odom = True
 zed_odom_topic = "/zed/zed_node/odom"
 
@@ -213,6 +220,12 @@ config = dict(
         rgb_info_topic=zed_rgb_info_topic,
         depth_topic=zed_depth_topic,
         depth_info_topic=zed_depth_info_topic,
+
+        # Compressed transport (WiFi / edge). Falls back to the raw *_topic
+        # names above when use_compressed=False.
+        use_compressed=use_compressed,
+        rgb_compressed_topic=zed_rgb_compressed_topic,
+        depth_compressed_topic=zed_depth_compressed_topic,
 
         use_odom=use_odom,
         odom_topic=zed_odom_topic,

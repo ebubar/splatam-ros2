@@ -30,6 +30,7 @@ import argparse
 import json
 import os
 import shutil
+import struct
 import sys
 import threading
 import time
@@ -47,7 +48,7 @@ from rclpy.executors import SingleThreadedExecutor
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
 from nav_msgs.msg import Odometry
 
-from sensor_msgs.msg import Image, CameraInfo
+from sensor_msgs.msg import Image, CompressedImage, CameraInfo
 from cv_bridge import CvBridge
 from message_filters import Subscriber, ApproximateTimeSynchronizer
 
@@ -83,6 +84,77 @@ def parse_args():
 # --------------------------------------------------------------------------- #
 # Decoding / conversion helpers
 # --------------------------------------------------------------------------- #
+
+PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+
+def decode_compressed_rgb(msg):
+    """sensor_msgs/CompressedImage (JPEG/PNG) -> RGB uint8 HxWx3."""
+    buf = np.frombuffer(msg.data, dtype=np.uint8)
+    bgr = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+    if bgr is None:
+        raise RuntimeError("Failed to decode RGB compressed image")
+    return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+
+
+def decode_compressed_depth(msg):
+    """
+    Robust decoder for ROS2 `compressedDepth` (as published by the ZED wrapper).
+
+    Handles both raw-PNG payloads and the 12-byte-header + PNG form used for
+    32FC1 (inverse-depth quantization). Returns float32 depth in METERS.
+    """
+    enc = msg.format.split(";")[0].strip() if ";" in msg.format else msg.format.strip()
+
+    data = msg.data
+    if not isinstance(data, (bytes, bytearray)):
+        data = bytes(data)
+
+    if len(data) < 8:
+        raise RuntimeError("compressedDepth too small")
+
+    # Case A: raw PNG starts immediately
+    if data[:8] == PNG_MAGIC:
+        inv = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+        if inv is None:
+            raise RuntimeError("Failed to decode depth PNG (raw)")
+        if enc.upper().startswith("16UC1"):
+            return inv.astype(np.float32) * 0.001    # mm -> m
+        if enc.upper().startswith("32FC1"):
+            return inv.astype(np.float32)
+        raise RuntimeError(f"Unsupported depth encoding (raw PNG): {enc}")
+
+    # Case B: 12-byte header + PNG
+    if len(data) < 12:
+        raise RuntimeError("compressedDepth too small for header")
+
+    _, depthQuantA, depthQuantB = struct.unpack("<iff", data[:12])
+    payload = data[12:]
+
+    png_pos = payload.find(PNG_MAGIC)
+    if png_pos < 0:
+        raise RuntimeError(
+            f"compressedDepth not PNG (format='{msg.format}'), RVL not supported"
+        )
+
+    png_bytes = payload[png_pos:]
+    inv = cv2.imdecode(np.frombuffer(png_bytes, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+    if inv is None:
+        raise RuntimeError("Failed to decode depth PNG (header+png)")
+
+    if enc.upper().startswith("32FC1"):
+        inv = inv.astype(np.float32)
+        depth = np.empty_like(inv, dtype=np.float32)
+        mask = inv > 0
+        depth[~mask] = 0.0
+        depth[mask] = depthQuantA / (inv[mask] - depthQuantB)
+        return depth  # meters
+
+    if enc.upper().startswith("16UC1"):
+        return inv.astype(np.float32) * 0.001    # mm -> m
+
+    raise RuntimeError(f"Unsupported depth encoding: {enc}")
+
 
 def caminfo_to_K(cam_info):
     return np.array(cam_info.k, dtype=np.float32).reshape(3, 3)
@@ -354,6 +426,12 @@ class ZedSplatamOnline(Node):
 
         self.save_depth_debug = bool(ros_cfg.get("save_depth_debug", False))
 
+        # Compressed transport: subscribe to JPEG RGB + compressedDepth instead
+        # of raw Image. ~7x less bandwidth (~30 vs ~210 Mbps) — required for
+        # WiFi / edge deployment. Decoding happens in the worker (freshest frame
+        # only), not the ROS callback.
+        self.use_compressed = bool(ros_cfg.get("use_compressed", False))
+
         self.workdir = Path(self.cfg["workdir"])
         self.run_name = self.cfg.get("run_name", "SplaTAM_ZED2i_ROS2")
         self.output_dir = self.workdir / self.run_name
@@ -408,8 +486,21 @@ class ZedSplatamOnline(Node):
             qos,
         )
 
-        self.rgb_sub = Subscriber(self, Image, ros_cfg["rgb_topic"], qos_profile=qos)
-        self.depth_sub = Subscriber(self, Image, ros_cfg["depth_topic"], qos_profile=qos)
+        if self.use_compressed:
+            img_msg_type = CompressedImage
+            rgb_topic = ros_cfg.get(
+                "rgb_compressed_topic", ros_cfg["rgb_topic"] + "/compressed"
+            )
+            depth_topic = ros_cfg.get(
+                "depth_compressed_topic", ros_cfg["depth_topic"] + "/compressedDepth"
+            )
+        else:
+            img_msg_type = Image
+            rgb_topic = ros_cfg["rgb_topic"]
+            depth_topic = ros_cfg["depth_topic"]
+
+        self.rgb_sub = Subscriber(self, img_msg_type, rgb_topic, qos_profile=qos)
+        self.depth_sub = Subscriber(self, img_msg_type, depth_topic, qos_profile=qos)
 
         sync_subs = [self.rgb_sub, self.depth_sub]
 
@@ -429,9 +520,11 @@ class ZedSplatamOnline(Node):
         else:
             self.ts.registerCallback(self._cb_no_odom)
 
+        transport = "compressed" if self.use_compressed else "raw"
         self.get_logger().info("ZedSplatamOnline ready.")
-        self.get_logger().info(f"RGB:   {ros_cfg['rgb_topic']}")
-        self.get_logger().info(f"Depth: {ros_cfg['depth_topic']}")
+        self.get_logger().info(f"Transport: {transport}")
+        self.get_logger().info(f"RGB:   {rgb_topic}")
+        self.get_logger().info(f"Depth: {depth_topic}")
         self.get_logger().info(f"Pose seed: {self.pose_init} (use_odom={self.use_odom})")
 
     # ---- ROS callbacks (kept intentionally trivial) ----------------------- #
@@ -466,11 +559,14 @@ class ZedSplatamOnline(Node):
     # ---- Frame construction ------------------------------------------------ #
 
     def make_frame(self, rgb_msg, depth_msg, rgb_info):
-        rgb_cv = self.bridge.imgmsg_to_cv2(rgb_msg, desired_encoding="passthrough")
-        depth_cv = self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding="passthrough")
-
-        rgb = ros_rgb_to_rgb(rgb_cv, rgb_msg.encoding)
-        depth_m = depth_to_meters(depth_cv, depth_msg.encoding)
+        if self.use_compressed:
+            rgb = decode_compressed_rgb(rgb_msg)          # RGB uint8 HxWx3
+            depth_m = decode_compressed_depth(depth_msg)  # float32 metres HxW
+        else:
+            rgb_cv = self.bridge.imgmsg_to_cv2(rgb_msg, desired_encoding="passthrough")
+            depth_cv = self.bridge.imgmsg_to_cv2(depth_msg, desired_encoding="passthrough")
+            rgb = ros_rgb_to_rgb(rgb_cv, rgb_msg.encoding)
+            depth_m = depth_to_meters(depth_cv, depth_msg.encoding)
 
         if depth_m.ndim == 3:
             depth_m = depth_m[..., 0]
