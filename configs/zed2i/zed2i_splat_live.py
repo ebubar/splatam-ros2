@@ -26,11 +26,16 @@ record_splat = True
 record_fps = 30.0
 
 # ROS Topics
-zed_rgb_topic = "/zed/zed_node/rgb/color/rect/image"
-zed_rgb_info_topic = "/zed/zed_node/rgb/color/rect/image/camera_info"
+# Verified against zed-ros2-wrapper tag humble-v4.2.5 (paired with ZED SDK
+# 4.2.5, per docs/FULL_STACK_SETUP.md A1/A3) via `ros2 topic list` on a live
+# camera. Older wrapper releases used ".../rgb/color/rect/image[/camera_info]"
+# — if a different wrapper build is ever used, re-verify with:
+#   ros2 topic list | grep -E "rgb|camera_info"
+zed_rgb_topic = "/zed/zed_node/rgb/image_rect_color"
+zed_rgb_info_topic = "/zed/zed_node/rgb/camera_info"
 
 zed_depth_topic = "/zed/zed_node/depth/depth_registered"
-zed_depth_info_topic = "/zed/zed_node/depth/depth_registered/camera_info"
+zed_depth_info_topic = "/zed/zed_node/depth/camera_info"
 
 # Transport. Compressed is REQUIRED for WiFi / edge deployment: it moves JPEG
 # RGB + compressedDepth (~30 Mbps) instead of raw Image (~210 Mbps). Set False
@@ -263,5 +268,13 @@ config = dict(
         view_scale=2,
         viz_fps=5,
         enter_interactive_post_online=False,
+
+        # Live browser viewer (scripts/live_viewer.py): orbitable view of the
+        # growing map while capturing, for room/environment-scale coverage.
+        # Off by default; see configs/zed2i/zed2i_local_direct.py.
+        live_viewer=False,
+        live_viewer_port=8080,
+        live_viewer_update_interval_s=0.5,
+        live_viewer_max_points=400000,
     ),
 )

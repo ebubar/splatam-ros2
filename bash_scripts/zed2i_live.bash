@@ -46,8 +46,8 @@ EOF
 printf "%b\n" "$ENDCOLOR"
 
 
-#CONFIG=$1
-CONFIG="configs/zed2i/zed2i_splat_live.py"
+CONFIG="${1:-configs/zed2i/zed2i_splat_live.py}"
+[ "$#" -ge 1 ] && shift   # don't forward the config path itself via "$@" below
 OUTPUT="experiments/ZED2i_Captures/zed2i_ros2_demo/SplaTAM_ZED2i_ROS2/splat.ply"
 if [ ! -f "$CONFIG" ]; then
     print_color "$danger" "[ERROR] Config not found: $CONFIG"

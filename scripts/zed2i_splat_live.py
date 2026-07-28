@@ -527,6 +527,15 @@ class ZedSplatamOnline(Node):
         self.get_logger().info(f"Depth: {depth_topic}")
         self.get_logger().info(f"Pose seed: {self.pose_init} (use_odom={self.use_odom})")
 
+        # Live browser viewer (viser): orbitable view of the growing map while
+        # walking, for room/environment-scale coverage. Fully decoupled — it
+        # only reads self.params / self.gt_w2c_all_frames on its own timer, so
+        # it can never block or slow tracking/mapping.
+        self.live_viewer = None
+        if bool(self.cfg.get("viz", {}).get("live_viewer", False)):
+            from scripts.live_viewer import LiveViewer
+            self.live_viewer = LiveViewer(self, self.cfg)
+
     # ---- ROS callbacks (kept intentionally trivial) ----------------------- #
 
     def rgb_info_cb(self, msg):
@@ -1035,6 +1044,9 @@ class ZedSplatamOnline(Node):
     # ---- Finalize / export ------------------------------------------------- #
 
     def finalize_and_exit(self):
+        if self.live_viewer is not None:
+            self.live_viewer.stop()
+
         if self.params is None or self.total_frames == 0:
             self.get_logger().warn("No frames processed; nothing to save.")
             os._exit(0)

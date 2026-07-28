@@ -46,7 +46,7 @@ file (`ros_params_override_path:=...` with `general.grab_resolution: 'VGA'`,
 
 ```bash
 export ROS_DOMAIN_ID=77
-ros2 topic hz /zed/zed_node/rgb/color/rect/image
+ros2 topic hz /zed/zed_node/rgb/image_rect_color
 ros2 topic hz /zed/zed_node/depth/depth_registered
 ros2 topic hz /zed/zed_node/odom
 ```
@@ -65,10 +65,21 @@ source /path/to/venv/splatam/bin/activate
 export ROS_DOMAIN_ID=77                    # must match Terminal A
 cd /path/to/splatam-ros2
 
-bash bash_scripts/zed2i_live.bash
+bash bash_scripts/zed2i_live.bash configs/zed2i/zed2i_local_direct.py
 ```
 
-This runs three stages in order (config `configs/zed2i/zed2i_splat_live.py`):
+Use `configs/zed2i/zed2i_local_direct.py` here, not the base
+`zed2i_splat_live.py` directly — the base config defaults
+`use_compressed=True` for the networked/WiFi deployment
+(docs/FULL_STACK_SETUP.md), which needs the
+`compressed-image-transport`/`compressed-depth-image-transport` ROS plugins.
+On a direct wired connection those plugins are usually not installed and
+there's no need for compression anyway; the local config turns it off (and
+raises `num_frames`/`map_every` for a more honest quality look than the
+45-frame default). If your build *does* have those plugins and you want to
+exercise the compressed path locally, pass the base config instead.
+
+This runs three stages in order:
 
 1. `scripts/zed2i_splat_live.py` — live SLAM, **45 frames** then saves & exits.
 2. `scripts/export_ply.py` — writes `splat.ply`.

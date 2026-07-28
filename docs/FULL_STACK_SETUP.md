@@ -57,13 +57,22 @@ and you're back to 210 Mbps. They compress on the *publisher* side, so they must
 be on the **Orin**.
 
 ### A3. Build the ZED ROS 2 wrapper
+Pin the tag to match the SDK version from A1 (topic names have changed
+between wrapper releases — see the note in A6):
 ```bash
 mkdir -p ~/ros2_ws/src && cd ~/ros2_ws/src
-git clone --recurse-submodules https://github.com/stereolabs/zed-ros2-wrapper.git
+git clone --recurse-submodules -b humble-v4.2.5 https://github.com/stereolabs/zed-ros2-wrapper.git
 cd ~/ros2_ws
 rosdep install --from-paths src --ignore-src -r -y
 colcon build --symlink-install
 echo 'source ~/ros2_ws/install/setup.bash' >> ~/.bashrc && source ~/.bashrc
+```
+This wrapper also needs `zed_msgs` (a separate repo on some tags) and
+`backward_ros` if colcon reports them missing:
+```bash
+cd ~/ros2_ws/src
+git clone https://github.com/stereolabs/zed-ros2-interfaces.git   # zed_msgs, if not already a submodule
+git clone https://github.com/pal-robotics/backward_ros.git        # if apt has no ros-humble-backward-ros
 ```
 
 ### A4. Network identity + WiFi-friendly DDS (do the matching parts on BOTH machines)
@@ -107,7 +116,7 @@ ros2 launch zed_wrapper zed_camera.launch.py \
 
 ### A6. Confirm the COMPRESSED topics exist and tick (on the Orin)
 ```bash
-ros2 topic hz /zed/zed_node/rgb/color/rect/image/compressed
+ros2 topic hz /zed/zed_node/rgb/image_rect_color/compressed
 ros2 topic hz /zed/zed_node/depth/depth_registered/compressedDepth
 ros2 topic hz /zed/zed_node/odom
 ```
@@ -183,7 +192,7 @@ print('STACK OK | cuda', torch.cuda.is_available())"     # -> STACK OK | cuda Tr
 2. From the **splatting machine**, confirm you receive the compressed streams:
    ```bash
    ros2 topic list | grep zed
-   ros2 topic hz /zed/zed_node/rgb/color/rect/image/compressed
+   ros2 topic hz /zed/zed_node/rgb/image_rect_color/compressed
    ros2 topic hz /zed/zed_node/depth/depth_registered/compressedDepth
    ros2 topic hz /zed/zed_node/odom
    ```
