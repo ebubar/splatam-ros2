@@ -1,3 +1,19 @@
+# splatam-ros2: ZED2i → ROS2 → Live SplaTAM
+
+This fork adds a realtime pipeline that streams RGB-D + odometry from a
+**ZED2i camera over ROS2** (locally attached, or networked from a robot/Orin)
+into **live Gaussian-splat SLAM**, with a browser-based viewer to watch the
+map build while you capture.
+
+- **[docs/QUICKSTART.md](docs/QUICKSTART.md)** — install + one command to bring it up. Start here.
+- **[docs/REALTIME_ARCHITECTURE.md](docs/REALTIME_ARCHITECTURE.md)** — why it's built the way it is (pose seeding, decoupled worker, multi-robot roadmap).
+- **`bash_scripts/start.bash`** — the single entry point (`check` / `local` / `local-live` / `networked`).
+
+Everything below this point is the original upstream SplaTAM project this
+was forked from.
+
+---
+
 <!-- PROJECT LOGO -->
 
 <p align="center">

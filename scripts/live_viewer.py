@@ -19,6 +19,7 @@ while the capture runs.
 
 import threading
 import time
+import traceback
 
 import numpy as np
 import torch
@@ -126,6 +127,16 @@ class LiveViewer:
         self._sl_min_depth.on_update(self._apply_live_params)
         self._sl_max_depth.on_update(self._apply_live_params)
 
+        self._log = self.node.get_logger()
+        self._render_thread = threading.Thread(target=self._loop, daemon=True)
+        self._render_thread.start()
+
+        self._log.info(
+            f"[LiveViewer] Open http://localhost:{port} "
+            f"(or this machine's LAN IP from another device) "
+            f"and orbit while you walk."
+        )
+
     def _apply_live_params(self, _):
         cfg = self.node.cfg
         cfg["map_every"] = int(self._sl_map_every.value)
@@ -134,32 +145,31 @@ class LiveViewer:
         cfg["ros"]["min_depth_m"] = float(self._sl_min_depth.value)
         cfg["ros"]["max_depth_m"] = float(self._sl_max_depth.value)
 
-        self._render_thread = threading.Thread(target=self._loop, daemon=True)
-        self._render_thread.start()
-
-        print(f"[LiveViewer] Open http://localhost:{port} "
-              f"(or this machine's LAN IP from another device) "
-              f"and orbit while you walk.", flush=True)
-
     def stop(self):
         self._stop = True
 
     # ---- background loop (own thread; only reads node state) -------------- #
 
     def _loop(self):
+        self._log.info("[LiveViewer] render thread started.")
+        tick_count = 0
         last_error_log = 0.0
         while not self._stop:
             time.sleep(self.update_interval_s)
             try:
                 self._tick()
-            except Exception as e:
+                tick_count += 1
+                if tick_count in (1, 2, 3) or tick_count % 40 == 0:
+                    self._log.info(f"[LiveViewer] tick #{tick_count} ok.")
+            except Exception:
                 # A render hiccup (e.g. mid-mapping tensor resize) must never
                 # take the viewer down or touch the SLAM thread.
                 now = time.time()
                 if now - last_error_log > 5.0:
                     last_error_log = now
-                    print(f"[LiveViewer] tick error: {type(e).__name__}: {e}",
-                          flush=True)
+                    self._log.error(
+                        "[LiveViewer] tick error:\n" + traceback.format_exc()
+                    )
 
     def _tick(self):
         node = self.node
@@ -189,12 +199,19 @@ class LiveViewer:
         if self._cb_true_render.value:
             self._render_true_splat(params)
         else:
-            self._update_point_cloud(params)
+            n_shown = self._update_point_cloud(params)
+            if self.node.total_frames <= 3:
+                self._log.info(f"[LiveViewer] points sent to scene: {n_shown}")
 
         self._update_trail(curr_c2w)
 
         if self._recenter_requested:
             self._recenter_requested = False
+            self._recenter(params)
+        elif n_frames > 0 and not getattr(self, "_auto_recentered", False):
+            # First real data: auto-frame the camera on it once, so you don't
+            # have to know to hunt for the Recenter button on a blank view.
+            self._auto_recentered = True
             self._recenter(params)
 
     # ---- visualization ------------------------------------------------------ #
@@ -225,6 +242,7 @@ class LiveViewer:
             point_size=float(self._sl_psize.value),
             point_shape="circle",
         )
+        return int(pts.shape[0])
 
     def _render_true_splat(self, params):
         """Occasional true rasterized render, from the browser's own orbit
