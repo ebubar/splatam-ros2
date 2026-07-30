@@ -47,17 +47,31 @@ check_env() {
         success "ros2 CLI available"
     fi
 
-    if python3 -c "import torch, diff_gaussian_rasterization, rclpy, cv2, cv_bridge, message_filters" 2>/dev/null; then
-        success "python env OK (torch + rclpy + rasterizer importable together)"
-    else
-        error "python import chain broken -- see docs/QUICKSTART.md 'Splatting machine setup'"
-        ok=0
-    fi
+    # Each import checked in isolation so a failure names the actual culprit
+    # (moving to a new machine tends to break exactly one of these, not all).
+    local mod hint
+    while IFS='|' read -r mod hint; do
+        [ -z "$mod" ] && continue
+        if python3 -c "import $mod" 2>/dev/null; then
+            success "$mod importable"
+        else
+            error "$mod import failed -- $hint"
+            ok=0
+        fi
+    done <<'EOF'
+rclpy|ROS2 not sourced before this env was activated -- source /opt/ros/humble/setup.bash BEFORE conda activate, every new shell
+cv_bridge|missing ROS package -- sudo apt install ros-humble-cv-bridge
+message_filters|missing ROS package -- sudo apt install ros-humble-message-filters
+cv2|pip install opencv-python (should be pulled in by requirements.txt)
+torch|pip install torch==2.3.1 torchvision==0.18.1 --index-url https://download.pytorch.org/whl/cu121
+diff_gaussian_rasterization|not built for THIS machine -- see docs/QUICKSTART.md Troubleshooting "moved to a different machine"
+viser|pip install viser
+EOF
 
     if python3 -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; then
         success "CUDA available"
     else
-        error "CUDA not available to torch -- check nvidia-smi / driver"
+        error "CUDA not available to torch -- check nvidia-smi runs at all first (a broken driver/library version shows here too, see docs/QUICKSTART.md Troubleshooting)"
         ok=0
     fi
 

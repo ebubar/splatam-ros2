@@ -207,7 +207,19 @@ Open **`http://localhost:8080`** (or the splatting machine's LAN IP, from any ot
 
 ## 6. Troubleshooting
 
-**`ros2` / import chain broken** — run `bash_scripts/start.bash check`; it tells you exactly which piece is missing.
+**`ros2` / import chain broken** — run `bash_scripts/start.bash check`; each import is tested in isolation, so the output names the specific broken piece (e.g. `[ERR] diff_gaussian_rasterization import failed -- ...`) rather than a generic "something's wrong."
+
+**Moved this repo/env to a different machine** — this is the single most common source of "worked yesterday, broken today," and `check` output tells you which of these it is:
+
+- **`rclpy` import fails** — almost always sourcing order. `source /opt/ros/humble/setup.bash` must happen *before* `conda activate splatam`, in *every new shell* — it's not persisted from a previous shell, and conda activating first can shadow the `PYTHONPATH` entries ROS's setup script adds. If you open a fresh terminal, source ROS first, always.
+- **`diff_gaussian_rasterization` import fails, or built fine but crashes/produces garbage at render time** — the rasterizer is a compiled CUDA extension; a build on one GPU does not transfer to a different GPU model. Rebuild it on the new machine with `TORCH_CUDA_ARCH_LIST` set to *that* GPU's compute capability (8.6 = RTX 30-series, 8.9 = RTX 40-series, 9.0 = H100 — check yours with `nvidia-smi --query-gpu=compute_cap --format=csv` if unsure):
+  ```bash
+  pip uninstall -y diff-gaussian-rasterization
+  TORCH_CUDA_ARCH_LIST="8.6" pip install --no-build-isolation ./third_party/diff-gaussian-rasterization/
+  ```
+- **`CUDA not available to torch`, but `nvidia-smi` itself works fine** — usually a torch build mismatched to the installed CUDA toolkit (reinstall torch per §1's exact pinned command, don't take "latest").
+- **`CUDA not available to torch`, AND `nvidia-smi` itself errors or hangs** — check for a driver/kernel-module mismatch first, *before* touching the Python env at all: `nvidia-smi` printing `Driver/library version mismatch` means the loaded kernel module and the installed driver package are different versions (common after an unattended background driver upgrade that didn't reload the kernel module). We hit this exact failure mid-session once — the fix was a reboot; a live fix without rebooting is possible (`sudo rmmod nvidia_uvm && sudo modprobe nvidia_uvm`, sometimes needing the other `nvidia*` modules too) but can fail if a display session is actively using them, so reboot is the reliable option.
+- **Everything imports fine but the pipeline behaves differently than the old machine** (drift, different FPS, different tracking behavior) — check `ros.pose_init` / `ros.use_odom` and the `tracking.lrs.*` values actually loaded; these are config, not environment, and are easy to assume carried over when they didn't (e.g. testing against a different config file by habit).
 
 **Topic names don't match what a config expects** — `zed-ros2-wrapper` renames topics across releases (we've seen both `.../rgb/image_rect_color` and `.../rgb/color/rect/image` for the *same* camera model, on different wrapper tags). Always verify against the wrapper actually running:
 ```bash
