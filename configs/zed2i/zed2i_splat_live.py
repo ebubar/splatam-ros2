@@ -15,7 +15,19 @@ overwrite = True
 full_res_width = 640
 full_res_height = 360
 downscale_factor = 1.0
-densify_downscale_factor = 1.0
+# 1.0 (full-res new-Gaussian sampling every mapping step) caused a runaway
+# gaussian-growth feedback loop (975K points, FPS collapsing to 0.08) -- 4.0
+# (matching configs/iphone/online_demo.py) fixed that but was too sparse (66K
+# points / 149s walk). 2.0 (193K points / 75s walk, stable, worst dropped-
+# frame gap 31) was still a bit sparse in supersplat but held together. 1.5
+# was tried to push density further and instead produced a HARD tracking
+# break -- two disconnected point clusters in one map, from a single mapping
+# stall that dropped 84 frames (vs 31 at densify=2.0), long enough that real
+# motion outran what tracking could re-localize against. 2.0 is the current
+# practical ceiling for sustained live density on this hardware/network;
+# don't go below it without also addressing the stall-duration side
+# (map_every / mapping_iters), not just densify_downscale_factor alone.
+densify_downscale_factor = 2.0
 
 # Recording
 live_stream_dir = "experiments/ZED2i_Live/zeros2 bag info zed2i_splatam_tf_bag/dTest/LiveStream"
@@ -76,7 +88,10 @@ else:
 
 mapping_window_size = 32
 tracking_iters = 40
-mapping_iters = 180
+# configs/iphone/online_demo.py (proven-good reference) uses 60 here, not 180
+# -- tracking_iters is already in line with (below) that reference, so the
+# stalls were coming from mapping, not tracking.
+mapping_iters = 60
 
 config = dict(
     workdir=f"{base_dir}/{scene_name}",
