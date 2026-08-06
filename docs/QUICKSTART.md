@@ -27,6 +27,8 @@ The non-negotiables, in order. Everything here is explained in detail further do
 
 **This exact combination is validated (ran the full pipeline successfully):** Ubuntu 22.04, ROS2 Humble, Python 3.10 in a conda env, torch 2.3.1+cu121, CUDA toolkit 12.1 (installed *via conda*, not system apt — simpler, and what we actually used).
 
+**Ubuntu 24.04 is also validated** — see the diff table at the end of this section before running the commands below.
+
 ```bash
 # ROS2 + the packages this pipeline's Python code imports directly
 sudo apt install -y ros-humble-desktop python3-colcon-common-extensions \
@@ -52,6 +54,37 @@ TORCH_CUDA_ARCH_LIST="8.6" pip install --no-build-isolation ./third_party/diff-g
 ```
 
 No `--system-site-packages` trick needed for conda: as long as you `source /opt/ros/humble/setup.bash` *before* `conda activate splatam` in any shell that's about to run this pipeline, `rclpy` resolves via `PYTHONPATH` (which the ROS setup script sets), independent of which Python environment is active. Order matters — source ROS first, every time.
+
+### Ubuntu 24.04 differences (validated)
+
+Ubuntu 24.04 ships ROS2 Jazzy (not Humble) and Python 3.12 (not 3.10). Every command above works with these substitutions:
+
+| What changes | Ubuntu 22.04 | Ubuntu 24.04 |
+|---|---|---|
+| ROS packages | `ros-humble-*` | `ros-jazzy-*` |
+| ROS setup script | `source /opt/ros/humble/setup.bash` | `source /opt/ros/jazzy/setup.bash` |
+| conda Python | `python=3.10` | `python=3.12` (must match Jazzy's Python) |
+| `open3d` pin in requirements.txt | `==0.16.0` | `>=0.18.0` (no 3.12 wheel for 0.16 — already updated in this repo) |
+| GCC for rasterizer build | system default is GCC 11, fine | system default is GCC 13, too new for CUDA 12.1 — use conda-forge GCC 12 instead |
+| `LD_LIBRARY_PATH` for rclpy | automatic | conda activation hook needed (see below) |
+
+**Rasterizer build on Ubuntu 24.04** — install GCC 12 via conda-forge instead of system apt (the system GCC 13 is rejected by CUDA 12.1's nvcc), and add ninja for a faster build:
+
+```bash
+conda install -c conda-forge gxx=12 ninja -y
+CC=$CONDA_PREFIX/bin/gcc CXX=$CONDA_PREFIX/bin/g++ TORCH_CUDA_ARCH_LIST="8.6" pip install --no-build-isolation ./third_party/diff-gaussian-rasterization/
+```
+
+**`rclpy` / `message_filters` on Ubuntu 24.04** — conda's activation reorders `LD_LIBRARY_PATH` and can shadow ROS's shared libraries. Fix with a one-time activation hook that persists across all future `conda activate splatam` calls:
+
+```bash
+mkdir -p $CONDA_PREFIX/etc/conda/activate.d
+cat > $CONDA_PREFIX/etc/conda/activate.d/ros_ld_path.sh <<'EOF'
+export LD_LIBRARY_PATH=/opt/ros/jazzy/lib/x86_64-linux-gnu:/opt/ros/jazzy/lib:${LD_LIBRARY_PATH:-}
+EOF
+```
+
+After creating the hook, deactivate and reactivate once for it to take effect. The sourcing order rule still applies: `source /opt/ros/jazzy/setup.bash` **before** `conda activate splatam`, every new shell.
 
 **Gate — run this before touching a camera or network:**
 

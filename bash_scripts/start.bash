@@ -41,7 +41,7 @@ usage() {
 check_env() {
     local ok=1
     if ! command -v ros2 >/dev/null 2>&1; then
-        error "ros2 not found -- source /opt/ros/humble/setup.bash first"
+        error "ros2 not found -- source /opt/ros/jazzy/setup.bash first"
         ok=0
     else
         success "ros2 CLI available"
@@ -59,9 +59,9 @@ check_env() {
             ok=0
         fi
     done <<'EOF'
-rclpy|ROS2 not sourced before this env was activated -- source /opt/ros/humble/setup.bash BEFORE conda activate, every new shell
-cv_bridge|missing ROS package -- sudo apt install ros-humble-cv-bridge
-message_filters|missing ROS package -- sudo apt install ros-humble-message-filters
+rclpy|ROS2 not sourced before this env was activated -- source /opt/ros/jazzy/setup.bash BEFORE conda activate, every new shell
+cv_bridge|missing ROS package -- sudo apt install ros-jazzy-cv-bridge
+message_filters|missing ROS package -- sudo apt install ros-jazzy-message-filters
 cv2|pip install opencv-python (should be pulled in by requirements.txt)
 torch|pip install torch==2.3.1 torchvision==0.18.1 --index-url https://download.pytorch.org/whl/cu121
 diff_gaussian_rasterization|not built for THIS machine -- see docs/QUICKSTART.md Troubleshooting "moved to a different machine"
